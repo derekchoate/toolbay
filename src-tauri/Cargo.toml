@@ -18,8 +18,36 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2" }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Async runtime for process supervision and HTTP downloads
+tokio = { version = "1", features = [
+  "process",
+  "io-util",
+  "time",
+  "macros",
+  "rt-multi-thread",
+] }
+
+# HTTP client for downloading wheels and interpreters
+reqwest = { version = "0.12", features = ["stream"] }
+
+# SHA-256 verification for downloaded artifacts
+sha2 = "0.10"
+
+# Wheel unpacking (wheels are zip files)
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# Home directory resolution for toolbay paths
+dirs = "5"
+
+# Temporary directories for tests
+tempfile = "3"
+
+[dev-dependencies]
+# Mock HTTP server for unit tests (no real network in CI)
+httpmock = "0.7"
 
