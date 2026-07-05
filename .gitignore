@@ -1,0 +1,98 @@
+# ---- Dependencies ----
+node_modules/
+jspm_packages/
+.pnp/
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ---- Build output ----
+dist/
+dist-ssr/
+build/
+out/
+lib/
+*.tsbuildinfo
+*.local
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Caches ----
+.cache/
+.npm/
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.vite/
+
+# ---- Test / coverage ----
+coverage/
+.nyc_output/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+
+# ---- Editor / IDE ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Claude ----
+.claude
+
+# ---- Operating system files ----
+
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.apdisk
+Icon?
+
+# The "Icon?" rule above matches macOS's literal "Icon\r" custom-folder-icon
+# file, but with core.ignorecase it also matches our own icons/ directories
+# (case-insensitively, "Icon" + 1 char == "icons"). Un-ignore them explicitly.
+!src-tauri/icons/
+!src-tauri/icons/**
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.stackdump
+
+# Linux
+.directory
+.Trash-*
+.nfs*
