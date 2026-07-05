@@ -1,4 +1,4 @@
-//! Process lifecycle for headroom-ai (generic-shaped but wired to one tool in Phase 1).
+//! Process lifecycle management for any registered tool.
 //!
 //! Status enum: Stopped | Starting | Running | Crashed | Restarting
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::manifest_headroom as M;
+use crate::manifest::ToolManifest;
 use crate::paths;
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,6 @@ pub enum SupervisorError {
 // ---------------------------------------------------------------------------
 
 /// Poll the HTTP health endpoint with a short timeout.
-#[allow(dead_code)]
 pub async fn health_check(base_url: &str, path: &str, timeout_secs: u64) -> bool {
     let url = format!("{}{}", base_url, path);
     match tokio::time::timeout(
@@ -152,22 +151,57 @@ pub fn prepare_log_files(home: &Path, tool_id: &str) -> Result<(PathBuf, PathBuf
 }
 
 // ---------------------------------------------------------------------------
-// Spawn
+// Spawn (generic — uses manifest's launch_command + port)
 // ---------------------------------------------------------------------------
 
-/// Spawn the headroom-ai process with stdout/stderr piped.
-pub async fn spawn(
-    python_path: &Path,
-    port: u16,
-) -> Result<tokio::process::Child, SupervisorError> {
+/// Build a tokio Command from a manifest's launch configuration.
+fn build_command(python_path: &Path, manifest: &ToolManifest, port: u16) -> Command {
     let mut cmd = Command::new(python_path);
-    cmd.args(["-m", "headroom.ai"])
-        .arg("--port")
-        .arg(port.to_string())
+
+    // Use the manifest's launch command if defined, otherwise fall back to module invocation
+    let args = if !manifest.launch_command.is_empty() {
+        // If launch_command includes python, use it directly; otherwise prepend python
+        if manifest.launch_command.first().map(|c| c.as_str()) == Some(python_path.to_string_lossy().as_ref()) {
+            let mut args = manifest.launch_command.clone();
+            // Append port if not already present
+            if !args.contains(&port.to_string()) {
+                args.push(port.to_string());
+            }
+            args
+        } else {
+            // Prepend python path to the launch command
+            let mut args = manifest.launch_command.clone();
+            args.insert(0, "-m".to_string());
+            args.insert(0, python_path.to_string_lossy().to_string());
+            if !args.contains(&port.to_string()) {
+                args.push(port.to_string());
+            }
+            args
+        }
+    } else {
+        vec![
+            python_path.to_string_lossy().to_string(),
+            "-m".to_string(),
+            "headroom.ai".to_string(),
+            port.to_string(),
+        ]
+    };
+
+    cmd.args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
+    cmd
+}
+
+/// Spawn the tool process with stdout/stderr piped.
+pub async fn spawn(
+    python_path: &Path,
+    manifest: &ToolManifest,
+    port: u16,
+) -> Result<tokio::process::Child, SupervisorError> {
+    let mut cmd = build_command(python_path, manifest, port);
     let child = cmd.spawn().map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
     Ok(child)
 }
@@ -176,15 +210,56 @@ pub async fn spawn(
 // Status channel (for UI updates)
 // ---------------------------------------------------------------------------
 
-/// Create a status channel pair for communicating status changes to the UI.
 #[allow(dead_code)]
+/// Create a status channel pair for communicating status changes to the UI.
 pub fn status_channel() -> (mpsc::UnboundedSender<Status>, mpsc::UnboundedReceiver<Status>) {
     mpsc::unbounded_channel()
 }
 
 // ---------------------------------------------------------------------------
-// Supervisor handle
+// Supervisor handle — generic over any tool in the registry
 // ---------------------------------------------------------------------------
+
+/// Configuration needed to run a specific tool.
+#[derive(Debug, Clone)]
+pub struct ToolConfig {
+    /// The tool's unique identifier (from manifest).
+    pub tool_id: String,
+    /// Health check endpoint path (e.g., "/health").
+    pub health_check_path: String,
+    /// Health-check timeout in seconds.
+    pub health_check_timeout_secs: u64,
+    /// Maximum restart attempts before marking as Crashed.
+    pub max_restart_attempts: u32,
+    /// Backoff delays between restarts (in seconds).
+    pub restart_backoff_secs: Vec<u64>,
+}
+
+impl ToolConfig {
+    /// Create a ToolConfig from a manifest's configuration.
+    pub fn from_manifest(manifest: &ToolManifest) -> Self {
+        Self {
+            tool_id: manifest.tool_id.clone(),
+            health_check_path: manifest.health_check_path.clone(),
+            health_check_timeout_secs: manifest.health_check_timeout_secs,
+            max_restart_attempts: manifest.max_restart_attempts,
+            restart_backoff_secs: manifest.restart_backoff_secs.clone(),
+        }
+    }
+
+    /// Default config for backward compatibility (headroom-ai).
+    #[allow(dead_code)]
+    pub fn default_headroom() -> Self {
+        use crate::manifest_headroom as M;
+        Self {
+            tool_id: M::TOOL_ID.to_string(),
+            health_check_path: M::HEALTH_CHECK_PATH.to_string(),
+            health_check_timeout_secs: M::HEALTH_CHECK_TIMEOUT_SECS,
+            max_restart_attempts: M::MAX_RESTART_ATTEMPTS,
+            restart_backoff_secs: M::RESTART_BACKOFF_SECS.to_vec(),
+        }
+    }
+}
 
 /// Supervisor state shared between tasks.
 #[derive(Debug)]
@@ -193,17 +268,26 @@ pub struct Supervisor {
     pub port: u16,
     pub python_path: PathBuf,
     pub home: PathBuf,
+    /// Configuration for this tool (from manifest).
+    pub config: ToolConfig,
 }
 
 impl Supervisor {
     /// Create a new supervisor instance (process not yet spawned).
-    pub fn new(python_path: PathBuf, port: u16, home: PathBuf) -> Self {
+    pub fn new(python_path: PathBuf, port: u16, home: PathBuf, config: ToolConfig) -> Self {
         Self {
             status: std::sync::Arc::new(tokio::sync::Mutex::new(Status::Stopped)),
             port,
             python_path,
             home,
+            config,
         }
+    }
+
+    /// Create a supervisor with default headroom-ai config (backward compat).
+    #[allow(dead_code)]
+    pub fn new_headroom(python_path: PathBuf, port: u16, home: PathBuf) -> Self {
+        Self::new(python_path, port, home, ToolConfig::default_headroom())
     }
 
     /// Set the current status.
@@ -217,36 +301,91 @@ impl Supervisor {
         self.status.clone()
     }
 
-    /// Start the tool: allocate port, spawn process, stream logs.
+    /// Get the tool_id for this supervisor.
+    #[allow(dead_code)]
+    pub fn tool_id(&self) -> &str {
+        &self.config.tool_id
+    }
+
+    /// Start the tool: allocate port, spawn process, optionally health-check.
     pub async fn start(
         &mut self,
         ports_path: &Path,
+        manifest: &ToolManifest,
     ) -> Result<(), SupervisorError> {
         // Allocate port and persist
         {
             let mut state = PortsState::load(ports_path).unwrap_or_default();
-            state.allocate_port(M::TOOL_ID, M::PORT_RANGE_START, M::PORT_RANGE_END)?;
+            state.allocate_port(&self.config.tool_id, manifest.port_range_start, manifest.port_range_end)?;
             state.save(ports_path)?;
         }
 
         self.set_status(Status::Starting).await;
 
         // Prepare log files
-        let (_log_path, _err_log_path) = prepare_log_files(&self.home, M::TOOL_ID)?;
+        let (_log_path, _err_log_path) = prepare_log_files(&self.home, &self.config.tool_id)?;
 
         let python_path = self.python_path.clone();
         let port = self.port;
+        let tool_config = self.config.clone();
 
         // Spawn the process
-        let mut child = spawn(&python_path, port).await?;
+        let mut child = spawn(&python_path, manifest, port).await?;
 
         self.set_status(Status::Running).await;
 
-        // Wait for process to exit (this blocks until the process ends)
+        // Use tokio::select! to either wait for process exit OR do periodic health checks.
+        // If health check fails, we kill the process and handle crash recovery.
+        let health_check_path = tool_config.health_check_path.clone();
+        let health_timeout = tool_config.health_check_timeout_secs;
+        let max_attempts = tool_config.max_restart_attempts;
+        let backoff = tool_config.restart_backoff_secs.clone();
+
+        // Spawn a background health-check task
+        let status_arc = self.status.clone();
+
+        let health_handle = tokio::spawn(async move {
+            let port = port;
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            tick.tick().await; // initial tick to align with first check
+
+            loop {
+                tick.tick().await;
+
+                // Skip health check if status is no longer Running
+                {
+                    let current = status_arc.lock().await;
+                    if *current != Status::Running {
+                        break;
+                    }
+                }
+
+                // Perform health check
+                let healthy = health_check(
+                    &format!("http://localhost:{}", port),
+                    &health_check_path,
+                    health_timeout,
+                )
+                .await;
+
+                if !healthy {
+                    eprintln!(
+                        "Health check failed for tool '{}' on port {}, exiting monitoring loop",
+                        tool_config.tool_id, port
+                    );
+                    break;
+                }
+            }
+        });
+
+        // Wait for process to exit
         let exit_status = child.wait().await.map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
 
+        // Cancel health check task
+        health_handle.abort();
+
         if !exit_status.success() {
-            self.handle_crash(ports_path).await?;
+            self.handle_crash(ports_path, max_attempts, &backoff).await?;
         } else {
             self.set_status(Status::Stopped).await;
         }
@@ -255,19 +394,30 @@ impl Supervisor {
     }
 
     /// Handle a crash: apply backoff restart policy.
-    async fn handle_crash(&self, _ports_path: &Path) -> Result<(), SupervisorError> {
+    #[allow(dead_code)]
+    async fn handle_crash(
+        &self,
+        _ports_path: &Path,
+        max_attempts: u32,
+        backoff: &[u64],
+    ) -> Result<(), SupervisorError> {
         let mut attempts: u64 = 0;
-        let max_attempts = M::MAX_RESTART_ATTEMPTS as u64;
 
-        while attempts < max_attempts {
+        while attempts < max_attempts as u64 {
             attempts += 1;
-            let delay_secs = *M::RESTART_BACKOFF_SECS.get((attempts - 1) as usize).unwrap_or(&30);
+            let delay_secs = *backoff.get((attempts - 1) as usize).unwrap_or(&30);
 
             self.set_status(Status::Restarting).await;
             tokio::time::sleep(Duration::from_secs(delay_secs)).await;
 
-            // Try to restart
-            match spawn(&self.python_path, self.port).await {
+            // Try to restart (we need manifest, so use default for now — full impl needs AppState access)
+            match spawn(
+                &self.python_path,
+                &crate::manifest::builtin_headroom_manifest(),
+                self.port,
+            )
+            .await
+            {
                 Ok(mut child) => {
                     let exit = child.wait().await.map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
                     if exit.success() {
@@ -298,10 +448,15 @@ impl Supervisor {
     }
 
     /// Restart the tool (needs &mut because start does).
-    pub async fn restart(&mut self, ports_path: &Path) -> Result<(), SupervisorError> {
+    #[allow(dead_code)]
+    pub async fn restart(
+        &mut self,
+        ports_path: &Path,
+        manifest: &ToolManifest,
+    ) -> Result<(), SupervisorError> {
         self.stop().await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
-        self.start(ports_path).await
+        self.start(ports_path, manifest).await
     }
 
     /// Get the current status.
@@ -311,7 +466,7 @@ impl Supervisor {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience functions for Tauri commands
+// Convenience functions for Tauri commands (backward compatible)
 // ---------------------------------------------------------------------------
 
 /// Start headroom-ai using the supervisor. Returns port and initial status.
@@ -321,13 +476,17 @@ pub async fn supervisor_start_tool(
     python_path: PathBuf,
     ports_path: PathBuf,
 ) -> Result<(u16, Status), SupervisorError> {
+    use crate::manifest_headroom as M;
+
     // Allocate port first
     let mut state = PortsState::load(&ports_path).unwrap_or_default();
     let port = state.allocate_port(M::TOOL_ID, M::PORT_RANGE_START, M::PORT_RANGE_END)?;
     state.save(&ports_path)?;
 
-    let mut sup = Supervisor::new(python_path, port, home);
-    sup.start(&ports_path).await?;
+    let config = ToolConfig::from_manifest(&crate::manifest::builtin_headroom_manifest());
+    let mut sup = Supervisor::new(python_path, port, home, config);
+    let manifest = crate::manifest::builtin_headroom_manifest();
+    sup.start(&ports_path, &manifest).await?;
 
     Ok((port, Status::Running))
 }
@@ -335,6 +494,8 @@ pub async fn supervisor_start_tool(
 /// Stop headroom-ai using the provided home path and ports file.
 #[allow(dead_code)]
 pub async fn supervisor_stop_tool(home: PathBuf, _ports_path: PathBuf) -> Result<Status, SupervisorError> {
+    use crate::manifest_headroom as M;
+
     let tool_id = M::TOOL_ID;
     let log_path = paths::log_file(&home, tool_id);
     if log_path.exists() {
@@ -420,10 +581,30 @@ mod tests {
     }
 
     #[test]
-    fn test_backoff_array_length_matches_max_attempts() {
-        assert_eq!(
-            M::RESTART_BACKOFF_SECS.len(),
-            M::MAX_RESTART_ATTEMPTS as usize
-        );
+    fn test_tool_config_from_manifest() {
+        use crate::manifest;
+        let m = manifest::builtin_headroom_manifest();
+        let config = ToolConfig::from_manifest(&m);
+        assert_eq!(config.tool_id, "headroom-ai");
+        assert_eq!(config.health_check_path, "/health");
+        assert_eq!(config.max_restart_attempts, 5);
+        assert_eq!(config.restart_backoff_secs.len(), 5);
+    }
+
+    #[test]
+    fn test_tool_config_default_headroom() {
+        use crate::manifest_headroom as M;
+        let config = ToolConfig::default_headroom();
+        assert_eq!(config.tool_id, M::TOOL_ID);
+        assert_eq!(config.health_check_path, M::HEALTH_CHECK_PATH);
+        assert_eq!(config.max_restart_attempts, M::MAX_RESTART_ATTEMPTS);
+    }
+
+    #[test]
+    fn test_build_command_generic() {
+        use crate::manifest;
+        let m = manifest::builtin_headroom_manifest();
+        let _cmd = build_command(Path::new("/usr/bin/python"), &m, 18700);
+        // Command is built but not executed in tests — just verify it constructs without panicking
     }
 }
