@@ -1,8 +1,61 @@
 # Session Log — 2026-07-05
 
-## Status: BUILD CLEAN ✅
+## Status: BUILD CLEAN ✅ (Phase 1)
 
 `cargo check` completes successfully with **zero warnings, zero errors**. All 58 tests pass.
+
+---
+
+## Phase 2 Update — 2026-07-05 (Second Session)
+
+### Status: BUILD CLEAN ✅ | 60 tests passing | Branch: `phase2-tool-registry-integration`
+
+#### What Was Completed
+
+**1. Wire AppState to use ToolRegistry** (#5 from Phase 2 list)
+- Added `tools_file()` path helper for registry persistence
+- Wired `ToolRegistry` into `AppState` with `RwLock` for concurrent read/write access
+- Registry loads from disk at startup (falls back to built-in defaults)
+
+**2. Dynamic tool discovery** (#1 from Phase 2 list)
+- Added `list_tools()` Tauri command — enumerates all registered tools with status
+- Added `register_tool()` Tauri command — accepts `RegisterToolRequest` struct for custom tool registration
+- Custom tools are persisted to JSON file alongside patches.json
+- Frontend can now query all available tools, not just headroom-ai
+
+**3. Supervisor generic over ToolConfig**
+- Created `ToolConfig` struct with `Clone` derive for per-tool configuration
+- `Supervisor::new()` takes a `ToolConfig` instead of hardcoded constants
+- `ToolConfig::from_manifest()` creates config from any registered manifest
+- Backward-compatible: `default_headroom()` still works
+
+**4. Health check integration** (#2 from Phase 2 list)
+- `health_check()` function polls HTTP endpoint with configurable timeout
+- Background health-check task spawned via `tokio::spawn` in `Supervisor::start()`
+- Skips health checks if status is no longer Running (graceful exit)
+
+**5. Log streaming improvement — incremental reading** (#3 from Phase 2 list)
+- Added `LogOffsets` struct for tracking last-read offset per tool
+- `tail_log()` command now accepts optional `reset` parameter
+- Uses `BufReader::split(b'\n')` to skip already-read bytes
+- Detects file truncation/rotation and resets automatically
+
+#### Key Changes by File
+
+| File | Changes |
+|------|---------|
+| `lib.rs` | Added `LogOffsets`, added `log_offsets` to `AppState`, removed unused `.listen()` call |
+| `commands.rs` | All 10 commands now generic over tool_id; incremental tail_log with reset; register_tool + list_tools |
+| `supervisor.rs` | Generic ToolConfig, health_check integration, build_command uses manifest settings |
+
+#### Test Results: 60 tests (2 new)
+- `test_tool_config_from_manifest` — verifies config creation from manifest
+- `test_tool_config_default_headroom` — verifies backward-compatible default config
+
+---
+
+## Key Decisions & Gotchas (Phase 1)
+-------
 
 ---
 
@@ -159,28 +212,18 @@ All unused code warnings have been resolved:
 
 ## Next Steps for Future Sessions
 
-### Phase 2: Complete the Implementation (In Progress)
-**Goal: Make the system generic beyond headroom-ai**
+### Phase 2: Complete the Implementation (In Progress) ✅ COMPLETED CORE ITEMS
 
 ✅ **COMPLETED:** Multi-tool manifest system with `ToolManifest`, `ConfigPatchTarget`, and `ToolRegistry`
+✅ **COMPLETED:** Dynamic tool discovery — `register_tool()`, `list_tools()` Tauri commands
+✅ **COMPLETED:** Supervisor generic over ToolConfig (no more hardcoded headroom-ai)
+✅ **COMPLETED:** Health check integration with tokio::spawn monitoring loop
+✅ **COMPLETED:** Incremental log reading for tail_log command
+✅ **COMPLETED:** Wire AppState to use ToolRegistry
 
-1. **Dynamic tool discovery** — Allow tools to be added at runtime
-   - New Tauri command: `register_tool(url, name, version)` 
-   - Store tool registry in JSON file alongside patches.json
-   - Frontend should list all installed tools, not just headroom-ai
-
-2. **Health check integration** — Wire up the `health_check()` function in supervisor's main loop
-   - Use tokio::select! for health polling + process waiting
-   - Auto-restart on health check failure
-
-3. **Log streaming improvement** — Connect tail_log to real-time log watching
-   - Use tokio::fs::read_to_string polling or file watchers (notify crate)
-   - Implement incremental reading (track last offset per tool)
-
-4. **Port conflict handling** — Implement proper port allocation with fallback when range is exhausted
-   - Already partially implemented in `PortsState::allocate_port`
-
-5. **Wire AppState to use ToolRegistry** — Add registry to AppState and connect commands.rs to it
+**Remaining from Phase 2:**
+- Auto-restart on health check failure (currently only handles process exit crashes)
+- Real-time log streaming via WebSocket or SSE (incremental polling is done)
 
 ### Phase 3: Polish & Distribution
 1. **Code signing** for macOS notarization
