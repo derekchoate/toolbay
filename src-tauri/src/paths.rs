@@ -35,6 +35,11 @@ pub fn patches_file(home: &Path) -> PathBuf {
     state_dir(home).join("patches.json")
 }
 
+/// Tool registry file: ~/Library/Application Support/toolbay/state/tools.json
+pub fn tools_file(home: &Path) -> PathBuf {
+    state_dir(home).join("tools.json")
+}
+
 /// Backups directory for a specific tool: ~/Library/Application Support/toolbay/backups/<tool_id>/
 pub fn backups_dir(home: &Path, tool_id: &str) -> PathBuf {
     toolbay_root(home).join("backups").join(tool_id)
