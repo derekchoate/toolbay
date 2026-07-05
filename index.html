@@ -4,40 +4,61 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Toolbay</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
+    <!-- Window Controls (visible during development) -->
+    <div class="window-controls">
+      <button id="close-btn" class="window-control close" title="Close (hide)">✕</button>
+    </div>
+
     <main class="container">
-      <h1>Welcome to Tauri</h1>
+      <!-- Header -->
+      <header class="app-header">
+        <h1>Toolbay</h1>
+        <p class="subtitle">Background tool supervisor</p>
+      </header>
 
-      <div class="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/src/assets/vite.svg" class="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img
-            src="/src/assets/tauri.svg"
-            class="logo tauri"
-            alt="Tauri logo"
-          />
-        </a>
-        <a href="https://www.typescriptlang.org/docs" target="_blank">
-          <img
-            src="/src/assets/typescript.svg"
-            class="logo typescript"
-            alt="typescript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+      <!-- Status Card -->
+      <section class="card status-card" id="status-card">
+        <div class="status-card-header">
+          <span class="status-label">Status</span>
+          <span id="status-badge" class="status-badge stopped">● Stopped</span>
+        </div>
+        <p id="install-msg" class="install-msg" data-installed="false">Not installed</p>
+      </section>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
+      <!-- Control Buttons -->
+      <section class="card actions-card">
+        <div class="button-row primary-actions">
+          <button id="install-btn" class="btn btn-primary">Install</button>
+          <button id="start-btn" class="btn btn-success" disabled>Start</button>
+          <button id="stop-btn" class="btn btn-danger" disabled>Stop</button>
+          <button id="restart-btn" class="btn btn-warning" disabled>Restart</button>
+        </div>
+        <div class="button-row">
+          <button id="uninstall-btn" class="btn btn-secondary">Uninstall</button>
+        </div>
+      </section>
+
+      <!-- Logs Section -->
+      <section class="card logs-card">
+        <div class="logs-header">
+          <span class="status-label">Logs</span>
+          <div class="log-actions">
+            <button id="refresh-logs-btn" class="btn btn-sm">Refresh</button>
+            <button id="open-logs-dir-btn" class="btn btn-sm">Open Logs Dir</button>
+          </div>
+        </div>
+        <pre id="log-output" class="log-output">(Loading…)</pre>
+      </section>
+
+      <!-- Footer -->
+      <footer class="app-footer">
+        <p>Toolbay v0.1.0 — macOS menu bar supervisor</p>
+      </footer>
     </main>
   </body>
 </html>
