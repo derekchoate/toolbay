@@ -8,6 +8,7 @@
 pub const TOOL_ID: &str = "headroom-ai";
 
 /// Display name shown in tray UI
+#[allow(dead_code)]
 pub const TOOL_DISPLAY_NAME: &str = "Headroom AI";
 
 // ---------------------------------------------------------------------------
@@ -47,9 +48,11 @@ pub const PORT_RANGE_START: u16 = 18700;
 pub const PORT_RANGE_END: u16 = 18799;
 
 /// Health check endpoint path (the full URL is `http://localhost:<port><HEALTH_CHECK_PATH>`)
+#[allow(dead_code)]
 pub const HEALTH_CHECK_PATH: &str = "/health";
 
 /// Default health-check timeout in seconds
+#[allow(dead_code)]
 pub const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 
 /// Maximum number of restart attempts before marking as Crashed
@@ -63,17 +66,21 @@ pub const RESTART_BACKOFF_SECS: &[u64] = &[1, 2, 5, 10, 30];
 // ---------------------------------------------------------------------------
 
 /// Path to Claude Desktop settings file (relative to home directory)
+#[allow(dead_code)]
 pub const CLAUDE_SETTINGS_REL_PATH: &str = ".claude/settings.json";
 
 /// Path to Codex config file (relative to home directory)
+#[allow(dead_code)]
 pub const CODEX_CONFIG_REL_PATH: &str = ".codex/config.toml";
 
 /// Marker prefix for TOML block inserts — start marker: # >>> toolbay-managed:<toolId> >>>
+#[allow(dead_code)]
 pub fn toml_block_start_marker(tool_id: &str) -> String {
     format!("# >>> toolbay-managed:{} >>>", tool_id)
 }
 
 /// Marker suffix for TOML block inserts — end marker: # <<< toolbay-managed:<toolId> <<<
+#[allow(dead_code)]
 pub fn toml_block_end_marker(tool_id: &str) -> String {
     format!("# <<< toolbay-managed:{} <<<", tool_id)
 }
@@ -83,14 +90,17 @@ pub fn toml_block_end_marker(tool_id: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// The Python interpreter executable name (within the installed runtime dir).
+#[allow(dead_code)]
 pub const PYTHON_INTERPRETER_NAME: &str = "python";
 
 /// Relative path inside the install directory where the wheel's entry-point script lives.
 /// On Unix, pip-installed scripts go to `bin/`.
+#[allow(dead_code)]
 pub const SCRIPTS_DIR_NAME: &str = "Scripts";
 
 /// The command used to launch headroom-ai after installation.
 /// More realistic: uses the vendored interpreter path + a module invocation.
+#[allow(dead_code)]
 pub fn build_launch_command(python_path: impl AsRef<str>) -> Vec<String> {
     vec![python_path.as_ref().to_string(), "-m".to_string(), "headroom.ai".to_string()]
 }

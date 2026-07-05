@@ -81,6 +81,7 @@ impl PortsState {
         )))
     }
 
+    #[allow(dead_code)]
     /// Get the allocated port for a tool. Returns None if not allocated.
     pub fn get_port(&self, tool_id: &str) -> Option<u16> {
         self.ports.get(tool_id).copied()
@@ -111,6 +112,7 @@ pub enum SupervisorError {
 // ---------------------------------------------------------------------------
 
 /// Poll the HTTP health endpoint with a short timeout.
+#[allow(dead_code)]
 pub async fn health_check(base_url: &str, path: &str, timeout_secs: u64) -> bool {
     let url = format!("{}{}", base_url, path);
     match tokio::time::timeout(
@@ -175,6 +177,7 @@ pub async fn spawn(
 // ---------------------------------------------------------------------------
 
 /// Create a status channel pair for communicating status changes to the UI.
+#[allow(dead_code)]
 pub fn status_channel() -> (mpsc::UnboundedSender<Status>, mpsc::UnboundedReceiver<Status>) {
     mpsc::unbounded_channel()
 }
@@ -312,6 +315,7 @@ impl Supervisor {
 // ---------------------------------------------------------------------------
 
 /// Start headroom-ai using the supervisor. Returns port and initial status.
+#[allow(dead_code)]
 pub async fn supervisor_start_tool(
     home: PathBuf,
     python_path: PathBuf,
@@ -329,6 +333,7 @@ pub async fn supervisor_start_tool(
 }
 
 /// Stop headroom-ai using the provided home path and ports file.
+#[allow(dead_code)]
 pub async fn supervisor_stop_tool(home: PathBuf, _ports_path: PathBuf) -> Result<Status, SupervisorError> {
     let tool_id = M::TOOL_ID;
     let log_path = paths::log_file(&home, tool_id);
@@ -350,7 +355,7 @@ mod tests {
     #[test]
     fn test_ports_state_allocate_and_get() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("ports.json");
+        let _path = temp.path().join("ports.json");
 
         let mut state = PortsState::default();
         assert_eq!(state.get_port("headroom-ai"), None);

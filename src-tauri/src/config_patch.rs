@@ -7,9 +7,8 @@
 //! Plus `env-file-line` (placeholder until a tool needs it).
 
 use serde_json::{Map, Value};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
 
 use crate::ledger;
 use crate::manifest_headroom as M;
@@ -26,6 +25,7 @@ pub enum PatchError {
     BackupFailed(String),
     #[error("Patch not found for target: {0}")]
     PatchNotFound(String),
+    #[allow(dead_code)]
     #[error("File not found: {0}")]
     FileNotFound(String),
 }
@@ -37,6 +37,7 @@ pub enum PatchError {
 /// Copy the file to backups/<tool_id>/<filename>.<timestamp>.bak before any edit.
 /// If the target doesn't exist, records "didn't exist" by returning an empty backup path.
 ///
+#[allow(dead_code)]
 /// Returns the backup file path (or empty string if source didn't exist).
 pub fn backup_file(target_path: &Path, tool_id: &str, home: &Path) -> Result<String, PatchError> {
     if !target_path.exists() {
@@ -64,6 +65,7 @@ pub fn backup_file(target_path: &Path, tool_id: &str, home: &Path) -> Result<Str
 // json-merge-key strategy
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// Apply a JSON merge-key patch: merges `key` → `value` into the top-level object of the target JSON file.
 /// Backs up first, then applies. Records in ledger.
 pub fn apply_json_merge_key(
@@ -105,13 +107,14 @@ pub fn apply_json_merge_key(
     Ok(())
 }
 
+#[allow(dead_code)]
 /// Reverse a JSON merge-key patch: removes the key that was added.
 pub fn reverse_json_merge_key(
     target_path: &Path,
     key: &str,
     backup_path: &str,
     tool_id: &str,
-    home: &Path,
+    _home: &Path,
     ledger_path: &Path,
 ) -> Result<(), PatchError> {
     // If there was no backup (file didn't exist), delete the file instead.
@@ -158,6 +161,7 @@ pub fn reverse_json_merge_key(
 // toml-block-insert strategy
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// Apply a TOML block insert: adds a marked block between toolbay markers in the target file.
 pub fn apply_toml_block_insert(
     target_path: &Path,
@@ -224,22 +228,37 @@ pub fn apply_toml_block_insert(
     Ok(())
 }
 
+#[allow(dead_code)]
 /// Reverse a TOML block insert: removes the marked block.
 pub fn reverse_toml_block_insert(
     target_path: &Path,
     backup_path: &str,
     tool_id: &str,
-    home: &Path,
+    _home: &Path,
     ledger_path: &Path,
 ) -> Result<(), PatchError> {
+    let marker_start = M::toml_block_start_marker(tool_id);
+    let marker_end = M::toml_block_end_marker(tool_id);
+
     if backup_path.is_empty() {
-        // File didn't exist — just delete it if our markers are present
+        // File didn't exist before patch — remove our markers and block from the file.
         if target_path.exists() {
             let content = fs::read_to_string(target_path)?;
-            let marker_start = M::toml_block_start_marker(tool_id);
-            let marker_end = M::toml_block_end_marker(tool_id);
             if content.contains(&marker_start) && content.contains(&marker_end) {
-                fs::remove_file(target_path)?;
+                // Strip everything between (and including) the markers, plus trailing newline
+                let start_byte = content.find(&marker_start).unwrap_or(0);
+                let end_byte = content.rfind(&marker_end).map(|p| p + marker_end.len()).unwrap_or(content.len());
+                let before_block = &content[..start_byte];
+                let after_block = &content[end_byte..];
+                let cleaned = format!("{}{}", before_block, after_block);
+                // Clean up any trailing blank lines left by block removal
+                let cleaned = cleaned.trim_end_matches('\n').to_string();
+                if !cleaned.is_empty() {
+                    fs::write(target_path, cleaned + "\n")?;
+                } else {
+                    // File was only our block — remove it entirely
+                    fs::remove_file(target_path)?;
+                }
             }
         }
     } else {
@@ -266,6 +285,7 @@ pub fn reverse_toml_block_insert(
 // env-file-line strategy (placeholder)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// Apply an environment file line insert: adds `key=value` to a .env-style file.
 pub fn apply_env_file_line(
     _target_path: &Path,
@@ -279,6 +299,7 @@ pub fn apply_env_file_line(
     Ok(())
 }
 
+#[allow(dead_code)]
 /// Reverse an env file line insert.
 pub fn reverse_env_file_line(
     _target_path: &Path,
@@ -296,6 +317,7 @@ pub fn reverse_env_file_line(
 // Uninstall: reverse all patches for a tool
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// Reverse all config patches made by a specific tool during uninstall.
 pub fn reverse_all_patches_for_tool(
     target_path: &Path,
@@ -505,6 +527,7 @@ port = 18700"#;
     }
 
     #[test]
+    #[allow(unused_mut)]
     fn test_patch_error_io_on_missing_parent() {
         // This tests that IO errors propagate correctly
         let temp = tempfile::tempdir().unwrap();

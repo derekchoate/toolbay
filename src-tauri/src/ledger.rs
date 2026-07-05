@@ -3,8 +3,7 @@
 //! Ledger entries are stored in `state/patches.json`.
 
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 /// A single patch entry recorded when a config change is made.
@@ -39,6 +38,7 @@ impl PatchLedger {
         serde_json::from_str(&data).unwrap_or_default()
     }
 
+    #[allow(dead_code)]
     /// Save the ledger to disk.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
@@ -49,11 +49,13 @@ impl PatchLedger {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Record a new patch entry.
     pub fn record_patch(&mut self, entry: PatchEntry) {
         self.entries.push(entry);
     }
 
+    #[allow(dead_code)]
     /// Get all entries for a specific tool.
     pub fn entries_for_tool(&self, tool_id: &str) -> Vec<&PatchEntry> {
         self.entries.iter().filter(|e| e.tool_id == tool_id).collect()
@@ -73,12 +75,14 @@ impl PatchLedger {
         to_reverse
     }
 
+    #[allow(dead_code)]
     /// Remove all entries for a specific tool (called after successful reversal).
     pub fn remove_for_tool(&mut self, tool_id: &str) {
         self.entries.retain(|e| e.tool_id != tool_id);
     }
 }
 
+#[allow(dead_code)]
 /// Create a new patch entry.
 pub fn make_entry(tool_id: &str, target_path: &str, strategy: &str, backup_path: &str) -> PatchEntry {
     PatchEntry {

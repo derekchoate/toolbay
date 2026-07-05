@@ -1,8 +1,8 @@
 # Session Log — 2026-07-05
 
-## Status: BUILD PASSING ✅
+## Status: BUILD CLEAN ✅
 
-`cargo check` completes successfully with only warnings (no errors).
+`cargo check` completes successfully with **zero warnings, zero errors**. All 58 tests pass.
 
 ---
 
@@ -14,10 +14,11 @@
 |------|---------|
 | `paths.rs` | Path resolution for toolbay directories (runtime, logs, state, ports file) |
 | `manifest_headroom.rs` | Hardcoded manifest: download URLs, SHA-256 hashes, port range, restart backoff |
+| **`manifest.rs`** ✨ | **NEW: Generic ToolManifest struct + ToolRegistry for multi-tool support** |
 | `runtime_install.rs` | Download + verify Python standalone + headroom wheel, install into runtime dir |
 | `supervisor.rs` | Process lifecycle: spawn, health-check loop, crash recovery, status states |
 | `ledger.rs` | Tracks config patches for reversible hot-reload support |
-| `config_patch.rs` | TOML patching with atomic write + backup/restore |
+| `config_patch.rs` | TOML/JSON patching with atomic write + backup/restore |
 | `commands.rs` | All 8 Tauri command handlers (get_status, install_tool, start_tool, stop_tool, restart_tool, uninstall_tool, tail_log, open_logs_dir) |
 | `lib.rs` | AppState struct, tauri::Builder setup, invoke_handler registration |
 | `main.rs` | Entry point: `toolbay_lib::run()` |
@@ -39,12 +40,17 @@
 ```
 error[E0255]: the name `__cmd__get_status` is defined multiple times
 ```
-**Solution:** Moved ALL Tauri commands into a dedicated `commands.rs` module. The proc-macro generates unique macro names per file, and having them in a single non-root module avoids the collision with the build script's code generation.
+**Solution:** Moved ALL Tauri commands into a dedicated `commands.rs` module.
 
-### 2. Crate Type Change
-Removed `staticlib` from `[lib] crate-type`. Only `cdylib` and `rlib` are needed for Tauri apps.
+### 2. String Indexing — Fixed with `.chars().nth()`
+**Problem:** Test code used integer indexing on strings (`ts[4]`) which doesn't work in Rust since strings are UTF-8.
+**Solution:** Used `.chars().nth(4).unwrap()` for character access, and byte-slice ranges for string slicing.
 
-### 3. Restart Method Signature
+### 3. TOML Block Reversal — Fixed to Strip Only Managed Content
+**Problem:** `reverse_toml_block_insert` with empty backup path deleted the entire file instead of just removing the managed block.
+**Solution:** Now correctly strips only content between markers, preserving any pre-existing file content.
+
+### 4. Restart Method Signature
 `Supervisor::restart()` requires `&mut self` because it calls `start()` which takes `&mut self`. The Tauri command handles this by using scoped mutable locks:
 ```rust
 {
@@ -52,6 +58,14 @@ Removed `staticlib` from `[lib] crate-type`. Only `cdylib` and `rlib` are needed
     sup.as_mut().unwrap().restart(&ports_path).await?;
 } // lock dropped before checking result
 ```
+
+### 5. Multi-Tool Manifest — Phase 2 Registry Pattern
+**Problem:** All tool configuration was hardcoded to `headroom-ai` constants, making it impossible to support additional tools.
+**Solution:** Created `manifest.rs` with:
+- `ToolManifest` struct — per-tool configuration (URLs, hashes, ports, health check, restart policy)
+- `ConfigPatchTarget` struct — declarative config patches per tool
+- `ToolRegistry` — in-memory + disk-backed store with builtin/custom separation
+- Backward-compatible helpers that delegate to `manifest_headroom` module
 
 ---
 
@@ -74,7 +88,8 @@ Removed `staticlib` from `[lib] crate-type`. Only `cdylib` and `rlib` are needed
 │  lib.rs → AppState + tauri::Builder         │
 │       │                                     │
 │       ├─► paths.rs          (path helpers)  │
-│       ├─► manifest_headroom.rs (constants)  │
+│       ├─► manifest_headroom.rs (Phase 1)    │
+│       ├─► manifest.rs     ← NEW: registry   │
 │       ├─► runtime_install.rs  (download+install) │
 │       ├─► supervisor.rs     (process mgmt)  │
 │       ├─► ledger.rs           (patch tracking)│
@@ -106,34 +121,71 @@ npm run tauri build
 cd src-tauri && cargo check
 ```
 
+### Run Tests
+```bash
+cd src-tauri && cargo test
+```
+
 ---
 
-## Remaining Warnings (Non-Critical)
+## Test Results
 
-33 warnings for unused code — these are reserved for Phase 2 features:
-- `health_check()` in supervisor.rs — HTTP health polling (unused parameter currently)
-- `status_channel()` in supervisor.rs — UI status broadcast channel
-- `supervisor_start_tool()` / `supervisor_stop_tool()` in supervisor.rs — convenience functions replaced by direct Supervisor usage
-- `get_port()` on PortsState — not yet used after allocation
-- `build_launch_command()` in manifest_headroom.rs — utility function
-- Various unused constants (PYTHON_INTERPRETER_NAME, SCRIPTS_DIR_NAME, etc.)
+| Metric | Count |
+|--------|-------|
+| Total tests | **58** (+13) |
+| Passed | 58 |
+| Failed | 0 |
+| Warnings | 0 |
 
-These can be prefixed with `_` or `#[allow(dead_code)]` to silence warnings.
+Test modules:
+- `paths` — 12 tests (path resolution, timestamp format)
+- `manifest_headroom` — 7 tests (constants, markers, port range validation)
+- **`manifest`** — **13 NEW tests** (registry CRUD, save/load, TOML markers, defaults)
+- `supervisor` — 8 tests (ports state allocation, status defaults, backoff arrays)
+- `runtime_install` — 4 tests (command building, disk usage reporting)
+- `ledger` — 5 tests (save/load/record/reverse for tool-specific entries)
+- `config_patch` — 9 tests (backup, JSON merge, TOML block insert, idempotency, multi-tool independence)
+
+---
+
+## Remaining Warnings (None ✅)
+
+All unused code warnings have been resolved:
+- Added `#[allow(dead_code)]` to Phase 2 placeholder functions in manifest.rs
+- Prefixed unused parameters with `_` where appropriate
+- Added `#[allow(unused_mut)]` where mutability is required by trait but not used in tests
 
 ---
 
 ## Next Steps for Future Sessions
 
-### Phase 2: Complete the Implementation
-1. **Wire up health check** — Use the `health_check()` function in supervisor's main loop
-2. **Implement log streaming** — Connect tail_log to real-time log watching (use tokio::fs::read_to_string polling or file watchers)
-3. **Add more tools** — Make the system generic beyond headroom-ai (currently hardcoded to TOOL_ID = "headroom-ai")
+### Phase 2: Complete the Implementation (In Progress)
+**Goal: Make the system generic beyond headroom-ai**
+
+✅ **COMPLETED:** Multi-tool manifest system with `ToolManifest`, `ConfigPatchTarget`, and `ToolRegistry`
+
+1. **Dynamic tool discovery** — Allow tools to be added at runtime
+   - New Tauri command: `register_tool(url, name, version)` 
+   - Store tool registry in JSON file alongside patches.json
+   - Frontend should list all installed tools, not just headroom-ai
+
+2. **Health check integration** — Wire up the `health_check()` function in supervisor's main loop
+   - Use tokio::select! for health polling + process waiting
+   - Auto-restart on health check failure
+
+3. **Log streaming improvement** — Connect tail_log to real-time log watching
+   - Use tokio::fs::read_to_string polling or file watchers (notify crate)
+   - Implement incremental reading (track last offset per tool)
+
 4. **Port conflict handling** — Implement proper port allocation with fallback when range is exhausted
+   - Already partially implemented in `PortsState::allocate_port`
+
+5. **Wire AppState to use ToolRegistry** — Add registry to AppState and connect commands.rs to it
 
 ### Phase 3: Polish & Distribution
 1. **Code signing** for macOS notarization
 2. **Auto-updater** integration (Tauri has built-in updater plugin)
-3. **Multi-tool support** — UI should list all installed tools, not just headroom-ai
+3. **Multi-tool UI** — Frontend should list all installed tools with individual controls
 4. **Settings panel** — Configure port ranges, restart policies, log levels
 
 ### Documentation Needed
@@ -163,7 +215,8 @@ ai-tools-tray-helper/
 │       ├── lib.rs           ← AppState + tauri::Builder
 │       ├── commands.rs      ← All Tauri command handlers
 │       ├── paths.rs         ← Path resolution
-│       ├── manifest_headroom.rs  ← Hardcoded tool manifest
+│       ├── manifest.rs      ← NEW: Generic tool registry
+│       ├── manifest_headroom.rs  ← Phase 1 hardcoded constants
 │       ├── runtime_install.rs    ← Download + install flow
 │       ├── supervisor.rs       ← Process lifecycle
 │       ├── ledger.rs           ← Config patch tracking

@@ -192,9 +192,9 @@ mod tests {
         // Should match YYYY-MM-DDTHH:MM:SS pattern
         assert!(ts.starts_with("20"));
         assert_eq!(ts.len(), 19);
-        assert_eq!(ts[4], '-');
-        assert_eq!(ts[7], '-');
-        assert_eq!(ts[10], 'T');
+        assert_eq!(ts.chars().nth(4).unwrap(), '-');
+        assert_eq!(ts.chars().nth(7).unwrap(), '-');
+        assert_eq!(ts.chars().nth(10).unwrap(), 'T');
     }
 
     #[test]

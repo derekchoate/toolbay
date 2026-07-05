@@ -4,6 +4,7 @@ pub mod paths;
 mod commands;
 mod config_patch;
 mod ledger;
+mod manifest;
 mod manifest_headroom;
 mod runtime_install;
 mod supervisor;
