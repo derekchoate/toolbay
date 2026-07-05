@@ -2,6 +2,7 @@
 //! All #[tauri::command] functions are defined here to avoid macro namespace pollution.
 
 use serde::{Deserialize, Serialize};
+use std::io::BufRead;
 use std::path::PathBuf;
 
 use crate::paths;
@@ -220,21 +221,22 @@ pub async fn start_tool(
     let ports_path = paths::ports_file(home);
 
     {
+        // Apply config patches for this tool (before starting)
+        apply_config_patches(home, &tid, &manifest).map_err(|e| format!("Config patch failed: {}", e))?;
+
         let mut sup_opt = state.supervisor.lock().await;
         if sup_opt.is_none() {
             // Allocate port first using manifest's range
             let port = allocate_port(&tid, &manifest, home).map_err(|e| format!("Port allocation failed: {}", e))?;
-            let sup = supervisor::Supervisor::new(python_path.clone(), port, home.clone());
+            let config = supervisor::ToolConfig::from_manifest(&manifest);
+            let sup = supervisor::Supervisor::new(python_path.clone(), port, home.clone(), config);
             *sup_opt = Some(sup);
         }
         
         // Get the supervisor and start it
         let sup_ref = sup_opt.as_mut().ok_or("Supervisor not initialized")?;
-        
-        // Apply config patches for this tool
-        apply_config_patches(home, &tid, &manifest).map_err(|e| format!("Config patch failed: {}", e))?;
 
-        sup_ref.start(&ports_path).await.map_err(|e| format!("Start failed: {}", e))?;
+        sup_ref.start(&ports_path, &manifest).await.map_err(|e| format!("Start failed: {}", e))?;
     }
 
     Ok(format!("Tool '{}' started successfully", manifest.display_name))
@@ -275,7 +277,7 @@ pub async fn restart_tool(
     {
         let mut sup = state.supervisor.lock().await;
         let sup_ref = sup.as_mut().ok_or("Tool is not running")?;
-        sup_ref.restart(&ports_path).await.map_err(|e| format!("Restart failed: {}", e))?;
+        sup_ref.restart(&ports_path, &manifest).await.map_err(|e| format!("Restart failed: {}", e))?;
     }
 
     Ok(format!("Tool '{}' restarted successfully", manifest.display_name))
@@ -340,12 +342,14 @@ pub async fn uninstall_tool(
     ))
 }
 
-/// Tail the log file for a tool.
+/// Tail the log file for a tool with incremental reading.
+/// If `reset` is true, starts from the beginning; otherwise reads from last offset.
 #[tauri::command]
 pub async fn tail_log(
     state: tauri::State<'_, crate::AppState>,
     lines: Option<usize>,
     tool_id: Option<String>,
+    reset: Option<bool>,
 ) -> Result<String, String> {
     let home = state.home.as_ref().ok_or("Home directory not resolved")?;
 
@@ -361,9 +365,62 @@ pub async fn tail_log(
         return Ok(String::new());
     }
 
-    let content = std::fs::read_to_string(&log_path).map_err(|e| format!("Failed to read log: {}", e))?;
-    let n = lines.unwrap_or(50);
+    // Get file metadata for size
+    let metadata = std::fs::metadata(&log_path).map_err(|e| format!("Failed to get log metadata: {}", e))?;
+    let file_size = metadata.len();
 
+    // Get or reset offset
+    let mut offsets = state.log_offsets.lock().map_err(|e| format!("Log offsets lock poisoned: {}", e))?;
+    if reset.unwrap_or(false) {
+        offsets.set(tid.clone(), 0);
+    }
+    let start_offset = offsets.get(&tid);
+
+    // If we've already read past the current size, reset to beginning
+    let (content, new_offset) = if start_offset >= file_size {
+        // File was truncated or rotated, read from beginning
+        let content = std::fs::read_to_string(&log_path).map_err(|e| format!("Failed to read log: {}", e))?;
+        (Some(content), file_size)
+    } else {
+        // Read only the new bytes
+        let file = std::fs::File::open(&log_path).map_err(|e| format!("Failed to open log: {}", e))?;
+        let reader = std::io::BufReader::new(file);
+        
+        // Skip to offset and read new content
+        let mut skipped_bytes = 0u64;
+        let mut new_content = String::new();
+        
+        for line_result in reader.split(b'\n') {
+            match line_result {
+                Ok(line_bytes) => {
+                    let line_len = line_bytes.len() as u64 + 1; // +1 for newline
+                    if skipped_bytes + line_len <= start_offset {
+                        skipped_bytes += line_len;
+                    } else {
+                        if let Ok(line_str) = std::str::from_utf8(&line_bytes) {
+                            new_content.push_str(line_str);
+                            new_content.push('\n');
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        
+        (if new_content.is_empty() { None } else { Some(new_content) }, file_size)
+    };
+
+    // Update offset for next read
+    offsets.set(tid.clone(), new_offset);
+    drop(offsets); // Release lock before Result return
+
+    let content = content.unwrap_or_default();
+    
+    if content.is_empty() {
+        return Ok(String::new());
+    }
+
+    let n = lines.unwrap_or(50);
     let lines_vec: Vec<&str> = content.lines().collect();
     let result: Vec<String> = lines_vec.iter().rev().take(n).rev().map(|l| l.to_string()).collect();
     Ok(result.join("\n"))
