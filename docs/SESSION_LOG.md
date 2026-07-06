@@ -4,7 +4,7 @@
 
 **Branch:** `phase2-tool-registry-integration`  
 **Status:** BUILD CLEAN ✅ | 60 tests passing | 1 harmless warning  
-**Last Updated:** 2026-07-05 (Second Session)
+**Last Updated:** 2026-07-05 (Third Session — Auto-restart on Health Check Failure)
 
 ### Quick Start for New Sessions
 ```bash
@@ -49,6 +49,33 @@ npm run tauri dev
 ---
 
 ## Phase 2: Multi-Tool Generic System ✅ CORE ITEMS COMPLETE
+
+### What Was Completed (Third Session — Auto-restart on Health Check Failure)
+
+#### 1. Implemented auto-restart when health check fails
+- **Problem:** Previously, when the background health-check task detected a failed health probe, it only broke out of its loop and logged a message. The process was not killed, and no restart was triggered.
+- **Solution:** Rewrote `Supervisor::start()` to use an outer restart loop that:
+  1. Spawns the initial process
+  2. Races between natural process exit and health-monitor signals using `tokio::select!`
+  3. On health failure: kills the unhealthy process, applies backoff delay, re-spawns
+  4. On crash (non-zero exit): same backoff + restart cycle
+  5. Exhausts up to `max_restart_attempts` before marking as Crashed
+
+#### 2. New `wait_for_crash_or_health_failure()` method
+- Uses `tokio::select!` to race between:
+  - **Process exit:** Returns `Ok(false)` — caller checks `exit_status.success()`
+  - **Health monitor signal:** Kills the process, waits for it, returns `Ok(true)`
+- Health monitor is spawned as a background task that polls at configurable intervals
+
+#### 3. Fixed hardcoded manifest reference in health monitor
+- **Problem:** The old health monitor used `builtin_headroom_manifest().health_check_path.clone()` and a hardcoded `/health` path, ignoring the tool's actual config.
+- **Solution:** Health monitor now receives `ToolConfig` values (tool_id, health_check_path, timeout) directly from the supervisor's own config — fully generic per-tool.
+
+#### 4. Removed unused `handle_crash()` method
+- The old `handle_crash()` used a hardcoded headroom manifest and was incomplete
+- Restart logic is now inline in `start()`, using the actual manifest passed to it
+
+---
 
 ### What Was Completed (Second Session)
 
@@ -163,7 +190,7 @@ let sup = state.supervisor.lock().await;
 ## Remaining Work for Future Sessions
 
 ### Phase 2 (Remaining Items)
-1. **Auto-restart on health check failure** — Currently only handles process exit crashes via `handle_crash()`. Need to trigger restart when health_check returns false.
+1. ~~**Auto-restart on health check failure**~~ ✅ **COMPLETE** — Implemented in third session. `Supervisor::start()` now uses an outer restart loop with `tokio::select!` to race between process exit and health-monitor signals. On health failure, the unhealthy process is killed, backoff delay applied, and re-spawn attempted.
 2. **Real-time log streaming** — Incremental polling is done, but WebSocket/SSE for push-based updates not implemented
 
 ### Phase 3: Polish & Distribution

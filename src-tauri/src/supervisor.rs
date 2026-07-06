@@ -307,13 +307,17 @@ impl Supervisor {
         &self.config.tool_id
     }
 
-    /// Start the tool: allocate port, spawn process, optionally health-check.
+    /// Start the tool: allocate port, spawn process, and run the health-monitor loop.
+    /// 
+    /// This method spawns a single process and monitors it with a background
+    /// health-check task. If the health check fails or the process crashes,
+    /// backoff restarts are attempted up to `max_restart_attempts`.
     pub async fn start(
         &mut self,
         ports_path: &Path,
         manifest: &ToolManifest,
     ) -> Result<(), SupervisorError> {
-        // Allocate port and persist
+        // Allocate port and persist.
         {
             let mut state = PortsState::load(ports_path).unwrap_or_default();
             state.allocate_port(&self.config.tool_id, manifest.port_range_start, manifest.port_range_end)?;
@@ -322,121 +326,148 @@ impl Supervisor {
 
         self.set_status(Status::Starting).await;
 
-        // Prepare log files
+        // Prepare log files.
         let (_log_path, _err_log_path) = prepare_log_files(&self.home, &self.config.tool_id)?;
 
-        let python_path = self.python_path.clone();
         let port = self.port;
-        let tool_config = self.config.clone();
+        let total_max_attempts: u64 = self.config.max_restart_attempts as u64;
+        let backoff = self.config.restart_backoff_secs.clone();
 
-        // Spawn the process
-        let mut child = spawn(&python_path, manifest, port).await?;
-
+        // Spawn the initial process.
+        let mut child = spawn(&self.python_path, manifest, port).await?;
         self.set_status(Status::Running).await;
 
-        // Use tokio::select! to either wait for process exit OR do periodic health checks.
-        // If health check fails, we kill the process and handle crash recovery.
-        let health_check_path = tool_config.health_check_path.clone();
-        let health_timeout = tool_config.health_check_timeout_secs;
-        let max_attempts = tool_config.max_restart_attempts;
-        let backoff = tool_config.restart_backoff_secs.clone();
+        // Run the health-monitor loop: each iteration waits for either a crash or
+        // health failure, then applies backoff and respawns until max attempts.
+        for attempt in 0..=total_max_attempts {
+            if attempt > 0 {
+                // Apply backoff delay before restart (attempt 0 is the initial start).
+                let delay_secs = *backoff.get((attempt - 1) as usize).unwrap_or(&30);
+                self.set_status(Status::Restarting).await;
+                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
 
-        // Spawn a background health-check task
-        let status_arc = self.status.clone();
+                // Re-spawn the process after backoff.
+                child = spawn(&self.python_path, manifest, port).await?;
+                self.set_status(Status::Running).await;
+            }
 
-        let health_handle = tokio::spawn(async move {
-            let port = port;
+            // Wait for either: (a) process exits on its own, or (b) health check fails.
+            let health_killed = Self::wait_for_crash_or_health_failure(&mut child, &self.config, port).await?;
+
+            if !health_killed {
+                // Process exited naturally — check exit status.
+                let exit_status = child
+                    .wait()
+                    .await
+                    .map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
+
+                if exit_status.success() {
+                    // Clean exit: tool finished normally.
+                    self.set_status(Status::Stopped).await;
+                    return Ok(());
+                }
+                // Process crashed (non-zero exit) — fall through to restart logic below.
+            }
+            // If health_killed is true, the process was already killed and waited on
+            // inside wait_for_crash_or_health_failure.
+
+            // Determine if we should retry.
+            let total_exits = attempt + 1; // attempt 0 → first exit, etc.
+            if total_exits >= total_max_attempts {
+                self.set_status(Status::Crashed).await;
+                return Err(SupervisorError::Supervisor(format!(
+                    "Process {} after {} attempt(s)",
+                    if health_killed { "became unhealthy" } else { "crashed" },
+                    total_exits,
+                )));
+            }
+        }
+
+        // Should not reach here, but just in case.
+        self.set_status(Status::Crashed).await;
+        Err(SupervisorError::Supervisor(format!(
+            "Process failed after {} attempts",
+            total_max_attempts
+        )))
+    }
+
+    /// Wait for a process to exit (crash) or for a health check to fail.
+    /// 
+    /// Uses `tokio::select!` to race between:
+    /// 1. The child process exiting — returns `Ok(false)` so the caller checks exit_status.
+    /// 2. A background health-monitor task detecting an unhealthy endpoint — kills the
+    ///    process, waits for it, and returns `Ok(true)`.
+    async fn wait_for_crash_or_health_failure(
+        child: &mut tokio::process::Child,
+        config: &ToolConfig,
+        port: u16,
+    ) -> Result<bool, SupervisorError> {
+        // Clone config values to avoid lifetime issues with tokio::spawn.
+        let hc_path = config.health_check_path.clone();
+        let hc_timeout = config.health_check_timeout_secs;
+        let tool_id_for_monitor = config.tool_id.clone();
+
+        // Also keep a separate copy for use after the select! (outside the moved closure).
+        let tool_id_after_select = config.tool_id.clone();
+
+        // Channel for the health monitor to signal that it killed the process.
+        let (signal_tx, mut signal_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+        // Spawn background health-monitor task using the tool's config.
+        let status_arc = std::sync::Arc::new(tokio::sync::Mutex::new(Status::Running));
+
+        let monitor_handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(10));
             tick.tick().await; // initial tick to align with first check
 
             loop {
                 tick.tick().await;
 
-                // Skip health check if status is no longer Running
+                // Skip health checks if status is no longer Running.
                 {
                     let current = status_arc.lock().await;
                     if *current != Status::Running {
-                        break;
+                        return;
                     }
                 }
 
-                // Perform health check
+                // Perform health check against the process's port using tool-specific path.
                 let healthy = health_check(
                     &format!("http://localhost:{}", port),
-                    &health_check_path,
-                    health_timeout,
+                    &hc_path,
+                    hc_timeout,
                 )
                 .await;
 
                 if !healthy {
                     eprintln!(
-                        "Health check failed for tool '{}' on port {}, exiting monitoring loop",
-                        tool_config.tool_id, port
+                        "Health check failed for tool '{}' on port {}, signaling process termination",
+                        tool_id_for_monitor, port
                     );
-                    break;
+                    let _ = signal_tx.send(()).await;
+                    return;
                 }
             }
         });
 
-        // Wait for process to exit
-        let exit_status = child.wait().await.map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
+        // Race: process exit vs. health-monitor signal.
+        tokio::select! {
+            // Case 1: Process exited on its own (crash or clean shutdown).
+            exit_status = child.wait() => {
+                let _ = exit_status.map_err(|e| SupervisorError::SpawnFailed(e.to_string()));
+                monitor_handle.abort();
+                Ok(false) // Caller should check exit_status.success().
+            }
 
-        // Cancel health check task
-        health_handle.abort();
-
-        if !exit_status.success() {
-            self.handle_crash(ports_path, max_attempts, &backoff).await?;
-        } else {
-            self.set_status(Status::Stopped).await;
-        }
-
-        Ok(())
-    }
-
-    /// Handle a crash: apply backoff restart policy.
-    #[allow(dead_code)]
-    async fn handle_crash(
-        &self,
-        _ports_path: &Path,
-        max_attempts: u32,
-        backoff: &[u64],
-    ) -> Result<(), SupervisorError> {
-        let mut attempts: u64 = 0;
-
-        while attempts < max_attempts as u64 {
-            attempts += 1;
-            let delay_secs = *backoff.get((attempts - 1) as usize).unwrap_or(&30);
-
-            self.set_status(Status::Restarting).await;
-            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-
-            // Try to restart (we need manifest, so use default for now — full impl needs AppState access)
-            match spawn(
-                &self.python_path,
-                &crate::manifest::builtin_headroom_manifest(),
-                self.port,
-            )
-            .await
-            {
-                Ok(mut child) => {
-                    let exit = child.wait().await.map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
-                    if exit.success() {
-                        self.set_status(Status::Stopped).await;
-                        return Ok(());
-                    }
-                    // Continue retrying on failure
-                }
-                Err(_) => {
-                    // Continue retrying on spawn failure
-                }
+            // Case 2: Health monitor detected failure — kill the process.
+            _ = signal_rx.recv() => {
+                eprintln!("Received health-failure signal: terminating unhealthy process for '{}'", tool_id_after_select);
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                monitor_handle.abort();
+                Ok(true) // Process was killed by health monitor.
             }
         }
-
-        self.set_status(Status::Crashed).await;
-        Err(SupervisorError::Supervisor(format!(
-            "Process crashed and failed to restart after {} attempts",
-            max_attempts
-        )))
     }
 
     /// Stop the running process (if any). In a full implementation this would hold
