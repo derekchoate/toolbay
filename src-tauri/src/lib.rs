@@ -4,6 +4,7 @@ pub mod paths;
 mod commands;
 mod config_patch;
 mod ledger;
+mod log_stream;
 mod manifest;
 mod manifest_headroom;
 mod runtime_install;
@@ -43,17 +44,8 @@ pub struct AppState {
     pub registry: std::sync::Arc<std::sync::RwLock<manifest::ToolRegistry>>,
     /// Log read offsets for incremental tail_log reads.
     pub log_offsets: std::sync::Arc<std::sync::Mutex<LogOffsets>>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            home: None,
-            supervisor: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            registry: std::sync::Arc::new(std::sync::RwLock::new(manifest::ToolRegistry::new())),
-            log_offsets: std::sync::Arc::new(std::sync::Mutex::new(LogOffsets::new())),
-        }
-    }
+    /// Real-time log stream manager (pushes new lines via Tauri events).
+    pub log_stream: std::sync::Arc<log_stream::LogStreamManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -78,11 +70,17 @@ pub fn run() {
                 eprintln!("Warning: failed to save initial registry: {}", e);
             }
 
+            // Create log stream manager with the AppHandle.
+            let log_stream = std::sync::Arc::new(
+                log_stream::LogStreamManager::new(app.app_handle().clone(), home.clone())
+            );
+
             let state = AppState {
                 home: Some(home),
                 supervisor: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
                 registry,
                 log_offsets: std::sync::Arc::new(std::sync::Mutex::new(LogOffsets::new())),
+                log_stream,
             };
             app.manage(state);
             Ok(())
@@ -98,6 +96,9 @@ pub fn run() {
             commands::open_logs_dir,
             commands::list_tools,
             commands::register_tool,
+            commands::start_log_stream,
+            commands::stop_log_stream,
+            commands::stop_all_log_streams,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

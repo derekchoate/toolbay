@@ -492,6 +492,65 @@ pub async fn register_tool(
 }
 
 // ---------------------------------------------------------------------------
+// Log streaming commands (real-time push-based log updates)
+// ---------------------------------------------------------------------------
+
+/// Start real-time log streaming for a tool.
+///
+/// Spawns a background task that tails the log file and emits new lines
+/// to the frontend via Tauri events on the "log-update" channel.
+#[tauri::command]
+pub async fn start_log_stream(
+    state: tauri::State<'_, crate::AppState>,
+    tool_id: Option<String>,
+) -> Result<String, String> {
+    // Resolve tool_id from registry or default
+    let tid = resolve_tool_id(&state, tool_id)?;
+
+    // Start the stream (idempotent — returns false if already running).
+    let started = state.log_stream.start_stream(&tid).await;
+    
+    if started {
+        Ok(format!("Log streaming started for tool '{}'", tid))
+    } else {
+        Ok(format!("Log streaming already active for tool '{}'", tid))
+    }
+}
+
+/// Stop real-time log streaming for a specific tool.
+#[tauri::command]
+pub async fn stop_log_stream(
+    state: tauri::State<'_, crate::AppState>,
+    tool_id: Option<String>,
+) -> Result<String, String> {
+    // Resolve tool_id from registry or default
+    let tid = resolve_tool_id(&state, tool_id)?;
+
+    state.log_stream.stop_stream(&tid).await;
+    Ok(format!("Log streaming stopped for tool '{}'", tid))
+}
+
+/// Helper: resolve a tool_id from the Option or fall back to first registered / default.
+fn resolve_tool_id(
+    state: &tauri::State<'_, crate::AppState>,
+    tool_id: Option<String>,
+) -> Result<String, String> {
+    Ok(tool_id.unwrap_or_else(|| {
+        let reg = state.registry.read().unwrap();
+        reg.tool_ids().first().cloned().unwrap_or(crate::manifest::default_tool_id().to_string())
+    }))
+}
+
+/// Stop ALL active log streams.
+#[tauri::command]
+pub async fn stop_all_log_streams(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<String, String> {
+    state.log_stream.stop_all().await;
+    Ok("All log streaming stopped".to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 

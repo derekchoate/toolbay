@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Branch:** `phase2-tool-registry-integration`  
-**Status:** BUILD CLEAN ✅ | 60 tests passing | 1 harmless warning  
-**Last Updated:** 2026-07-05 (Third Session — Auto-restart on Health Check Failure)
+**Branch:** `feature/real-time-log-streaming`  
+**Status:** BUILD CLEAN ✅ | 60 tests passing | 2 harmless warnings  
+**Last Updated:** 2026-07-06 (Fourth Session — Real-time Log Streaming)
 
 ### Quick Start for New Sessions
 ```bash
@@ -103,23 +103,98 @@ npm run tauri dev
 - `tail_log()` command accepts optional `reset` parameter
 - Uses `BufReader::split(b'\n')` to skip already-read bytes
 
-### Current File States (Post-Phase 2)
+---
 
-| File | Purpose |
-|------|---------|
-| `paths.rs` | Added `tools_file(home)` for registry JSON persistence |
-| `manifest.rs` | ToolManifest, ConfigPatchTarget, ToolRegistry structs + tests |
-| `lib.rs` | AppState with registry + log_offsets; LogOffsets struct |
-| `commands.rs` | 10 commands total: get_status, install_tool, start_tool, stop_tool, restart_tool, uninstall_tool, tail_log, open_logs_dir, list_tools, register_tool |
-| `supervisor.rs` | Generic ToolConfig, health_check(), build_command from manifest, spawn, prepare_log_files, PortsState |
+## Phase 4: Real-time Log Streaming ✅ COMPLETE
 
-### Build Status
-- **60 tests passing** (2 new: `test_tool_config_from_manifest`, `test_tool_config_default_headroom`)
-- 1 harmless warning: `install_headroom_ai` unused function in `runtime_install.rs`
+### What Was Completed (Fourth Session)
+
+#### 1. Implemented real-time log streaming via Tauri events
+- **Problem:** The frontend only had incremental polling for logs — no push-based real-time updates. Users had to wait up to 15 seconds between manual refreshes.
+- **Solution:** Created a new `log_stream.rs` module that spawns background tailer tasks per tool, reading new log lines every 500ms and emitting them via Tauri events (`app_handle.emit("log-update", ...)`).
+
+#### 2. New `LogStreamManager` struct in `log_stream.rs`
+- Manages per-tool streaming lifecycle (start/stop)
+- Uses `tokio::sync::mpsc` channels for clean task shutdown
+- Each tailer task tracks byte offset to avoid re-emitting old content
+- Handles file truncation/rotation by detecting size decreases
+
+#### 3. New Tauri commands: `start_log_stream`, `stop_log_stream`, `stop_all_log_streams`
+- Registered in `commands.rs` alongside existing 10 commands (now 13 total)
+- Use shared `resolve_tool_id()` helper for consistent tool resolution
+
+#### 4. Updated `AppState` in `lib.rs`
+- Added `log_stream: Arc<LogStreamManager>` field
+- Added `app_handle: tauri::AppHandle` to enable event emission from manager
+- Registered new commands in the `invoke_handler`
+
+#### 5. Frontend updates (`main.ts`, `index.html`, `styles.css`)
+- Added "▶ Stream / ⏸ Pause" toggle button in logs header
+- Tauri `listen<LogLineEvent>("log-update", ...)` event listener for push-based log updates
+- Accumulated log lines buffer (max 500) with auto-scroll to bottom
+- Streaming state tracked in JS — stop streaming on tool stop/uninstall
+- CSS pulse animation on streaming button when active
+
+### Architecture (Real-time Log Streaming)
+
+```
+┌─────────────────────────────────────────────┐
+│              Frontend (TS)                  │
+│                                             │
+│  [▶ Stream Button] ──invoke──► start_log_stream()
+│  [⏸ Pause Button]  ──invoke──► stop_log_stream()
+│        ▲                                    │
+│        │ listen("log-update")               │
+│        └──── event.payload.line ────────────┘
+├─────────────────────────────────────────────┤
+│              Backend (Rust)                 │
+│                                             │
+│  commands.rs                                │
+│    ├─ start_log_stream(tool_id?)            │
+│    ├─ stop_log_stream(tool_id?)             │
+│    └─ stop_all_log_streams()                │
+│         │                                   │
+│         ▼                                   │
+│  log_stream.rs → LogStreamManager           │
+│    ├─ streams: Mutex<HashMap<tid, StreamEntry>>
+│    ├─ start_stream(tid) → spawns tailer     │
+│    └─ stop_stream(tid) → drops entry        │
+│                                                  │
+│  tail_log_task(tid, log_path, shutdown_rx)      │
+│    ├── Open std::fs::File                        │
+│    ├── Loop:                                     │
+│    │   select! {                                 │
+│    │     shutdown_rx.recv() → break              │
+│    │     sleep(500ms) → read new bytes           │
+│    │                                              │
+│    │   Seek to last_size                         │
+│    │   For each new line:                        │
+│    │     app_handle.emit("log-update", event)    │
+│    │   Update last_size                          │
+│    │ }                                           │
+│    └── File truncation → reset offset to 0      │
+├─────────────────────────────────────────────┤
+│              External Tools                 │
+│  - Log files: ~/.local/share/toolbay/logs/   │
+│    {tool_id}.log, {tool_id}.err.log          │
+└─────────────────────────────────────────────┘
+
+AppState structure (post-Phase 4):
+  - home: Option<PathBuf>
+  - supervisor: Arc<Mutex<Option<Supervisor>>>
+  - registry: Arc<RwLock<ToolRegistry>>
+  - log_offsets: Arc<Mutex<LogOffsets>>
+  - app_handle: tauri::AppHandle       ← NEW
+  - log_stream: Arc<LogStreamManager>  ← NEW
+```
+
+### Build Status (Post-Phase 4)
+- **60 tests passing** (no new tests — streaming is integration-level)
+- 2 harmless warnings: `install_headroom_ai` unused, `shutdown_tx` never read
 
 ---
 
-## Architecture Overview (Post-Phase 2)
+## Architecture Overview (Pre-Phase 4)
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -131,7 +206,7 @@ npm run tauri dev
 ├─────────────────────────────────────────────┤
 │              Tauri Backend (Rust)           │
 │                                             │
-│  commands.rs  ← 10 Tauri command handlers   │
+│  commands.rs  ← 13 Tauri command handlers   │
 │       │                                     │
 │       ▼                                     │
 │  lib.rs → AppState + tauri::Builder         │
@@ -141,6 +216,7 @@ npm run tauri dev
 │       ├─► manifest_headroom.rs (Phase 1)    │
 │       ├─► runtime_install.rs (download+install) │
 │       ├─► supervisor.rs    (generic mgmt)   │
+│       ├─► log_stream.rs    (real-time logs) │ ← NEW
 │       ├─► ledger.rs          (patch tracking)│
 │       └─► config_patch.rs  (TOML editing)   │
 ├─────────────────────────────────────────────┤
@@ -151,7 +227,7 @@ npm run tauri dev
 │  - macOS `open` command (for logs dir)     │
 └─────────────────────────────────────────────┘
 
-AppState structure:
+AppState structure (pre-Phase 4):
   - home: Option<PathBuf>
   - supervisor: Arc<Mutex<Option<Supervisor>>>
   - registry: Arc<RwLock<ToolRegistry>>
@@ -185,13 +261,21 @@ let sup = state.supervisor.lock().await;
 3. If offset >= file_size: file was truncated/rotated, read from beginning
 4. Otherwise: use `BufReader::split(b'\n')` to skip to offset and read new bytes only
 
+### Real-time Log Streaming Pattern (Phase 4)
+1. Frontend calls `start_log_stream()` via Tauri invoke
+2. Backend spawns a Tokio task (`tail_log_task`) that opens the log file
+3. Task enters a `tokio::select!` loop: shutdown channel vs 500ms timer
+4. On timer: re-check file size, seek to last offset, read new lines
+5. Each line emitted via `app_handle.emit("log-update", LogLineEvent { tool_id, line })`
+6. Frontend listens for `"log-update"` events and appends to accumulated buffer
+
 ---
 
 ## Remaining Work for Future Sessions
 
 ### Phase 2 (Remaining Items)
 1. ~~**Auto-restart on health check failure**~~ ✅ **COMPLETE** — Implemented in third session. `Supervisor::start()` now uses an outer restart loop with `tokio::select!` to race between process exit and health-monitor signals. On health failure, the unhealthy process is killed, backoff delay applied, and re-spawn attempted.
-2. **Real-time log streaming** — Incremental polling is done, but WebSocket/SSE for push-based updates not implemented
+2. ~~**Real-time log streaming**~~ ✅ **COMPLETE** — Implemented in fourth session via `log_stream.rs`. Background tailer tasks emit new lines as Tauri events (`"log-update"`). Frontend has Stream/Pause toggle button with pulse animation.
 
 ### Phase 3: Polish & Distribution
 1. **Code signing** for macOS notarization
@@ -213,7 +297,7 @@ let sup = state.supervisor.lock().await;
 | Total tests | **60** (+2 from Phase 2 session) |
 | Passed | 60 |
 | Failed | 0 |
-| Warnings | 1 (harmless: `install_headroom_ai` unused) |
+| Warnings | 2 (harmless: `install_headroom_ai` unused, `shutdown_tx` never read) |
 
 Test modules:
 - `paths` — 12 tests (path resolution, timestamp format)
@@ -246,10 +330,10 @@ Test modules:
 ## Git History (Current Branch)
 
 ```
-phase2-tool-registry-integration
-├── 49f2e5f phase2: wire ToolRegistry into AppState, add multi-tool commands
-├── ee9c472 phase2: supervisor generic over ToolConfig, health checks...
-└── 57b1a5c docs: update SESSION_LOG with Phase 2 completion summary
+feature/real-time-log-streaming
+├── (pending commit) feat: add real-time log streaming via Tauri events
+├── ee9f291 (origin/main, main) feat.supervisor: implement auto-restart on health check failure
+└── ... (earlier Phase 2 commits on origin/main)
 ```
 
 To see all commits: `git log --oneline`
