@@ -1,6 +1,6 @@
 /**
- * Toolbay — Frontend for macOS menu-bar app managing background CLI/AI tools.
- * Vanilla TS (no framework needed for this simple UI).
+ * Toolbay — Multi-tool frontend for macOS menu-bar app managing background CLI/AI tools.
+ * Vanilla TS (no framework needed). Each registered tool gets its own card with controls.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -17,6 +17,14 @@ interface ToolStatusResponse {
   installed: boolean;
 }
 
+interface ToolInfoResponse {
+  tool_id: string;
+  display_name: string;
+  status: string;
+  port: number;
+  installed: boolean;
+}
+
 /** Shape of the LogLineEvent emitted by the backend during streaming. */
 interface LogLineEvent {
   tool_id: string;
@@ -24,38 +32,28 @@ interface LogLineEvent {
 }
 
 // ---------------------------------------------------------------------------
-// State
+// State — per-tool tracking
 // ---------------------------------------------------------------------------
 
-let currentStatus = "stopped";
-let installBtn: HTMLButtonElement | null;
-let startBtn: HTMLButtonElement | null;
-let stopBtn: HTMLButtonElement | null;
-let restartBtn: HTMLButtonElement | null;
-let uninstallBtn: HTMLButtonElement | null;
-let statusBadgeEl: HTMLElement | null;
-let installMsgEl: HTMLElement | null;
-let logOutputEl: HTMLElement | null;
-let streamLogsBtn: HTMLButtonElement | null;
+/** Per-tool streaming state. */
+interface ToolStreamState {
+  isStreaming: boolean;
+  listener: (() => void) | null;
+  accumulatedLines: string[];
+}
 
-// Streaming state
-let isStreaming = false;
-let logStreamListener: (() => void) | null = null;
-let accumulatedLogLines: string[] = [];
+/** Map of tool_id → per-tool state. */
+const streamStates: Map<string, ToolStreamState> = new Map();
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — Status
 // ---------------------------------------------------------------------------
 
-function setStatus(status: string) {
-  currentStatus = status.toLowerCase();
-  if (!statusBadgeEl) return;
+function updateStatusBadge(badge: HTMLElement, status: string) {
+  const normalized = status.toLowerCase();
+  badge.classList.remove("stopped", "starting", "running", "crashed", "restarting");
+  badge.classList.add(normalized);
 
-  // Remove all status classes
-  statusBadgeEl.classList.remove("stopped", "starting", "running", "crashed", "restarting");
-  statusBadgeEl.classList.add(currentStatus);
-
-  // Update text
   const labels: Record<string, string> = {
     stopped: "● Stopped",
     starting: "◌ Starting…",
@@ -63,248 +61,507 @@ function setStatus(status: string) {
     crashed: "✕ Crashed",
     restarting: "↻ Restarting…",
   };
-  statusBadgeEl.textContent = labels[currentStatus] || currentStatus.toUpperCase();
+  badge.textContent = labels[normalized] || normalized.toUpperCase();
 }
 
-function updateButtons() {
-  const isInstalled = currentStatus !== "stopped" || installMsgEl?.dataset.installed === "true";
-  const canControl = ["running", "crashed", "restarting"].includes(currentStatus);
+function updateToolButtons(
+  installBtn: HTMLButtonElement,
+  startBtn: HTMLButtonElement,
+  stopBtn: HTMLButtonElement,
+  restartBtn: HTMLButtonElement,
+  uninstallBtn: HTMLButtonElement,
+  status: string,
+  installed: boolean
+) {
+  const canControl = ["running", "crashed", "restarting"].includes(status);
 
-  if (installBtn) installBtn.disabled = isInstalled;
-  if (startBtn) startBtn.disabled = !isInstalled || currentStatus === "running" || currentStatus === "starting" || currentStatus === "restarting";
-  if (stopBtn) stopBtn.disabled = !canControl;
-  if (restartBtn) restartBtn.disabled = !canControl;
-  if (uninstallBtn) uninstallBtn.disabled = !isInstalled;
-}
-
-/** Append a single log line to the log output area. */
-function appendLogLine(line: string) {
-  if (!logOutputEl) return;
-
-  accumulatedLogLines.push(line);
-
-  // Keep only last 500 lines in memory to prevent unbounded growth
-  if (accumulatedLogLines.length > 500) {
-    accumulatedLogLines = accumulatedLogLines.slice(-500);
-  }
-
-  logOutputEl.textContent = accumulatedLogLines.join("\n");
-
-  // Auto-scroll to bottom
-  logOutputEl.scrollTop = logOutputEl.scrollHeight;
-}
-
-/** Clear the accumulated log buffer. */
-function clearLogBuffer() {
-  accumulatedLogLines = [];
+  installBtn.disabled = installed;
+  startBtn.disabled = !installed || status === "running" || status === "starting" || status === "restarting";
+  stopBtn.disabled = !canControl;
+  restartBtn.disabled = !canControl;
+  uninstallBtn.disabled = !installed;
 }
 
 // ---------------------------------------------------------------------------
-// Commands
+// Helpers — Log lines
 // ---------------------------------------------------------------------------
 
-async function getStatus() {
-  try {
-    const resp: ToolStatusResponse = await invoke("get_status");
-    setStatus(resp.status);
-    updateButtons();
-    if (resp.installed) {
-      if (installMsgEl) {
-        installMsgEl.dataset.installed = "true";
-        installMsgEl.textContent = `Installed — Port: ${resp.port ?? "—"}`;
-      }
-    } else {
-      if (installMsgEl) {
-        installMsgEl.dataset.installed = "false";
-        installMsgEl.textContent = "Not installed";
-      }
-    }
-  } catch (err) {
-    console.error("Failed to get status:", err);
+function appendLogLine(toolId: string, line: string) {
+  const state = streamStates.get(toolId);
+  if (!state) return;
+
+  state.accumulatedLines.push(line);
+
+  // Keep only last 500 lines in memory
+  if (state.accumulatedLines.length > 500) {
+    state.accumulatedLines = state.accumulatedLines.slice(-500);
+  }
+
+  const el = document.querySelector(`.tool-card[data-tool-id="${toolId}"] .tool-log-output`);
+  if (el) {
+    el.textContent = state.accumulatedLines.join("\n");
+    (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
   }
 }
 
-async function installTool() {
-  if (!installMsgEl) return;
-  installMsgEl.textContent = "Installing… Please wait.";
-  try {
-    const result = await invoke("install_tool");
-    installMsgEl.textContent = `Installation complete: ${result}`;
-    updateButtons();
-    // Poll for status after install
-    setTimeout(getStatus, 1000);
-  } catch (err) {
-    installMsgEl.textContent = `Install failed: ${err}`;
+function clearLogBuffer(toolId: string) {
+  const state = streamStates.get(toolId);
+  if (state) {
+    state.accumulatedLines = [];
   }
 }
 
-async function startTool() {
+// ---------------------------------------------------------------------------
+// Commands — per tool_id
+// ---------------------------------------------------------------------------
+
+async function getToolStatus(toolId: string): Promise<ToolStatusResponse | null> {
   try {
-    await invoke("start_tool");
-    setStatus("starting");
-    updateButtons();
+    return await invoke<ToolStatusResponse>("get_status", { toolId });
+  } catch (err) {
+    console.error(`Failed to get status for ${toolId}:`, err);
+    return null;
+  }
+}
+
+async function installTool(toolId: string, cardEl: HTMLElement) {
+  const msgEl = cardEl.querySelector(".install-msg") as HTMLElement | null;
+  if (!msgEl) return;
+
+  msgEl.textContent = "Installing…";
+
+  try {
+    const result = await invoke("install_tool", { toolId });
+    msgEl.textContent = `Installed: ${result}`;
+    updateCardFromStatus(toolId, cardEl);
+  } catch (err) {
+    msgEl.textContent = `Install failed: ${err}`;
+  }
+}
+
+async function startTool(toolId: string, cardEl: HTMLElement) {
+  try {
+    await invoke("start_tool", { toolId });
+    const badge = cardEl.querySelector(".status-badge") as HTMLElement | null;
+    if (badge) updateStatusBadge(badge, "starting");
     // Poll for status updates
-    pollStatus();
+    pollToolStatus(toolId, cardEl);
   } catch (err) {
-    console.error("Failed to start:", err);
+    console.error(`Failed to start ${toolId}:`, err);
   }
 }
 
-async function stopTool() {
+async function stopTool(toolId: string, cardEl: HTMLElement) {
   try {
-    await invoke("stop_tool");
-    setStatus("stopped");
-    updateButtons();
+    await invoke("stop_tool", { toolId });
+
     // Stop streaming if active
-    if (isStreaming) {
-      await toggleLogStream(false);
+    const state = streamStates.get(toolId);
+    if (state?.isStreaming) {
+      await toggleLogStream(toolId, false);
     }
+
+    updateCardFromStatus(toolId, cardEl);
   } catch (err) {
-    console.error("Failed to stop:", err);
+    console.error(`Failed to stop ${toolId}:`, err);
   }
 }
 
-async function restartTool() {
+async function restartTool(toolId: string, cardEl: HTMLElement) {
   try {
-    await invoke("restart_tool");
-    setStatus("restarting");
-    updateButtons();
-    pollStatus();
+    await invoke("restart_tool", { toolId });
+    const badge = cardEl.querySelector(".status-badge") as HTMLElement | null;
+    if (badge) updateStatusBadge(badge, "restarting");
+    pollToolStatus(toolId, cardEl);
   } catch (err) {
-    console.error("Failed to restart:", err);
+    console.error(`Failed to restart ${toolId}:`, err);
   }
 }
 
-async function uninstallTool() {
+async function uninstallTool(toolId: string, displayName: string, cardEl: HTMLElement) {
   if (!confirm(
-    "Are you sure you want to uninstall headroom-ai?\n\n" +
-    "This will:\n" +
-    "  • Remove the runtime directory (~/.local/share/toolbay/runtimes/headroom-ai/)\n" +
-    "  • Reverse config patches in ~/.claude/settings.json and ~/.codex/config.toml\n" +
-    "  • Backups are preserved in ~/Library/Application Support/toolbay/backups/"
+    `Are you sure you want to uninstall ${displayName}?
+
+This will:
+  • Remove the runtime directory
+  • Reverse config patches
+  • Backups are preserved`
   )) {
     return;
   }
 
-  if (!installMsgEl) return;
-  installMsgEl.textContent = "Uninstalling… Please wait.";
-
   // Stop streaming if active
-  if (isStreaming) {
-    await toggleLogStream(false);
+  const state = streamStates.get(toolId);
+  if (state?.isStreaming) {
+    await toggleLogStream(toolId, false);
   }
 
   try {
-    const result = await invoke("uninstall_tool");
-    installMsgEl.textContent = String(result);
-    setStatus("stopped");
-    updateButtons();
+    const result = await invoke("uninstall_tool", { toolId });
+    console.log(result);
+    // Remove the card from DOM
+    cardEl.remove();
+    // Check if list is empty
+    checkEmptyState();
   } catch (err) {
-    installMsgEl.textContent = `Uninstall failed: ${err}`;
+    alert(`Uninstall failed: ${err}`);
   }
 }
 
-async function refreshLogs() {
-  if (!logOutputEl) return;
+async function refreshLogs(toolId: string, cardEl: HTMLElement) {
+  const logOutput = cardEl.querySelector(".tool-log-output") as HTMLElement | null;
+  if (!logOutput) return;
+
   try {
     // Stop streaming temporarily for a full refresh
-    const wasStreaming = isStreaming;
+    const wasStreaming = streamStates.get(toolId)?.isStreaming ?? false;
     if (wasStreaming) {
-      await toggleLogStream(false);
+      await toggleLogStream(toolId, false);
     }
 
-    // Reset log buffer for a fresh read
-    clearLogBuffer();
+    clearLogBuffer(toolId);
 
-    const logContent: string = await invoke("tail_log", { reset: true, lines: 100 });
+    const logContent: string = await invoke("tail_log", { toolId, reset: true, lines: 100 });
     if (logContent) {
       const lines = logContent.split("\n");
       for (const line of lines) {
-        appendLogLine(line);
+        appendLogLine(toolId, line);
       }
     } else {
-      appendLogLine("(No log entries yet)");
+      appendLogLine(toolId, "(No log entries yet)");
     }
 
     // Restart streaming if it was active
     if (wasStreaming) {
-      await toggleLogStream(true);
+      await toggleLogStream(toolId, true);
     }
   } catch (err) {
-    appendLogLine(`Failed to read logs: ${err}`);
-  }
-}
-
-async function openLogsDir() {
-  try {
-    await invoke("open_logs_dir");
-  } catch (err) {
-    console.error("Failed to open logs dir:", err);
+    appendLogLine(toolId, `Failed to read logs: ${err}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Log streaming (real-time push via Tauri events)
+// Log streaming — per tool_id
 // ---------------------------------------------------------------------------
 
-async function toggleLogStream(forceState?: boolean) {
-  const shouldStart = forceState !== undefined ? forceState : !isStreaming;
+async function toggleLogStream(toolId: string, forceState?: boolean) {
+  let state = streamStates.get(toolId);
+  if (!state) {
+    state = { isStreaming: false, listener: null, accumulatedLines: [] };
+    streamStates.set(toolId, state);
+  }
+
+  const shouldStart = forceState !== undefined ? forceState : !state.isStreaming;
 
   if (shouldStart) {
     try {
-      await invoke("start_log_stream");
-      isStreaming = true;
-      if (streamLogsBtn) {
-        streamLogsBtn.textContent = "⏸ Pause";
-        streamLogsBtn.classList.add("streaming");
+      await invoke("start_log_stream", { toolId });
+      state.isStreaming = true;
+
+      // Set up Tauri event listener for this tool
+      let unlistenFn: (() => void) | null = null;
+      const setupListener = async () => {
+        unlistenFn = await listen<LogLineEvent>("log-update", (event) => {
+          if (state?.isStreaming && event.payload?.tool_id === toolId) {
+            appendLogLine(toolId, event.payload.line);
+          }
+        });
+      };
+      void setupListener(); // Fire and forget — listener will be set up async
+      state.listener = () => { unlistenFn?.(); };
+
+      // Update button text
+      const streamBtn = document.querySelector(`.tool-card[data-tool-id="${toolId}"] .tool-stream-btn`);
+      if (streamBtn) {
+        (streamBtn as HTMLButtonElement).textContent = "⏸ Pause";
+        (streamBtn as HTMLButtonElement).classList.add("streaming");
       }
     } catch (err) {
-      console.error("Failed to start log streaming:", err);
+      console.error(`Failed to start log streaming for ${toolId}:`, err);
     }
   } else {
     try {
-      await invoke("stop_log_stream");
-      isStreaming = false;
-      if (logStreamListener) {
-        logStreamListener();
-        logStreamListener = null;
+      await invoke("stop_log_stream", { toolId });
+      state.isStreaming = false;
+
+      if (state.listener) {
+        state.listener();
+        state.listener = null;
       }
-      if (streamLogsBtn) {
-        streamLogsBtn.textContent = "▶ Stream";
-        streamLogsBtn.classList.remove("streaming");
+
+      const streamBtn = document.querySelector(`.tool-card[data-tool-id="${toolId}"] .tool-stream-btn`);
+      if (streamBtn) {
+        (streamBtn as HTMLButtonElement).textContent = "▶ Stream";
+        (streamBtn as HTMLButtonElement).classList.remove("streaming");
       }
     } catch (err) {
-      console.error("Failed to stop log streaming:", err);
+      console.error(`Failed to stop log streaming for ${toolId}:`, err);
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Polling
+// Polling — per tool_id
 // ---------------------------------------------------------------------------
 
-let pollInterval: number | null = null;
+let pollIntervals: Map<string, number> = new Map();
 
-function pollStatus() {
-  if (pollInterval !== null) clearInterval(pollInterval);
-  // Poll every 2 seconds for the first 30 seconds, then every 10 seconds
+function pollToolStatus(toolId: string, cardEl: HTMLElement) {
+  // Clear existing interval if any
+  const existing = pollIntervals.get(toolId);
+  if (existing !== undefined) clearInterval(existing);
+
   let count = 0;
   const maxPolls = 150; // 30 seconds at 2s intervals
 
-  pollInterval = window.setInterval(async () => {
+  const interval = window.setInterval(async () => {
     count++;
-    await getStatus();
+    const status = await getToolStatus(toolId);
+    if (status) {
+      updateCardUI(toolId, cardEl, status);
+    }
 
-    // If running or stopped, slow down polling
-    if (count > maxPolls || currentStatus === "stopped" || currentStatus === "running") {
-      clearInterval(pollInterval!);
-      pollInterval = null;
-      // Do a final check
-      if (currentStatus !== "starting" && currentStatus !== "restarting") {
-        getStatus();
+    if (count >= maxPolls || status?.status === "stopped" || status?.status === "running") {
+      clearInterval(interval);
+      pollIntervals.delete(toolId);
+      // Final check
+      if (status && status.status !== "starting" && status.status !== "restarting") {
+        updateCardUI(toolId, cardEl, status);
       }
     }
   }, 2000);
+
+  pollIntervals.set(toolId, interval);
+}
+
+// ---------------------------------------------------------------------------
+// Card rendering / updates
+// ---------------------------------------------------------------------------
+
+/** Update a tool card's UI elements from a ToolStatusResponse. */
+function updateCardUI(
+  toolId: string,
+  cardEl: HTMLElement,
+  status: ToolStatusResponse
+) {
+  const badge = cardEl.querySelector(".status-badge") as HTMLElement | null;
+  const msgEl = cardEl.querySelector(".install-msg") as HTMLElement | null;
+  const installBtn = cardEl.querySelector(".tool-install-btn") as HTMLButtonElement | null;
+  const startBtn = cardEl.querySelector(".tool-start-btn") as HTMLButtonElement | null;
+  const stopBtn = cardEl.querySelector(".tool-stop-btn") as HTMLButtonElement | null;
+  const restartBtn = cardEl.querySelector(".tool-restart-btn") as HTMLButtonElement | null;
+  const uninstallBtn = cardEl.querySelector(".tool-uninstall-btn") as HTMLButtonElement | null;
+
+  if (badge) updateStatusBadge(badge, status.status);
+  if (msgEl) {
+    msgEl.dataset.installed = String(status.installed);
+    msgEl.textContent = status.installed
+      ? `Installed — Port: ${status.port ?? "—"}`
+      : "Not installed";
+  }
+
+  if (installBtn && startBtn && stopBtn && restartBtn && uninstallBtn) {
+    updateToolButtons(installBtn, startBtn, stopBtn, restartBtn, uninstallBtn, status.status, status.installed);
+  }
+}
+
+/** Fetch current status and update the card. */
+async function updateCardFromStatus(toolId: string, cardEl: HTMLElement) {
+  const status = await getToolStatus(toolId);
+  if (status) {
+    updateCardUI(toolId, cardEl, status);
+  }
+}
+
+/** Create a tool card DOM element from the template and populate it. */
+function createToolCard(toolInfo: ToolInfoResponse): HTMLElement | null {
+  const template = document.querySelector<HTMLTemplateElement>("#tool-card-template");
+  if (!template) return null;
+
+  const clone = template.content.cloneNode(true) as DocumentFragment;
+  const card = clone.children[0] as HTMLElement;
+
+  // Set data attributes and content
+  card.dataset.toolId = toolInfo.tool_id;
+  card.querySelector(".tool-display-name")!.textContent = toolInfo.display_name;
+  card.querySelector(".tool-id-badge")!.textContent = toolInfo.tool_id;
+
+  const installMsg = card.querySelector(".install-msg") as HTMLElement | null;
+  if (installMsg) {
+    installMsg.dataset.installed = String(toolInfo.installed);
+    installMsg.textContent = toolInfo.installed
+      ? `Installed — Port: ${toolInfo.port || "—"}`
+      : "Not installed";
+  }
+
+  // Initialize per-tool streaming state
+  streamStates.set(toolInfo.tool_id, {
+    isStreaming: false,
+    listener: null,
+    accumulatedLines: [],
+  });
+
+  // Wire up button event listeners using closure over toolId and card
+  const installBtn = card.querySelector(".tool-install-btn") as HTMLButtonElement | null;
+  const startBtn = card.querySelector(".tool-start-btn") as HTMLButtonElement | null;
+  const stopBtn = card.querySelector(".tool-stop-btn") as HTMLButtonElement | null;
+  const restartBtn = card.querySelector(".tool-restart-btn") as HTMLButtonElement | null;
+  const uninstallBtn = card.querySelector(".tool-uninstall-btn") as HTMLButtonElement | null;
+  const streamBtn = card.querySelector(".tool-stream-btn") as HTMLButtonElement | null;
+  const refreshBtn = card.querySelector(".tool-refresh-btn") as HTMLButtonElement | null;
+
+  installBtn?.addEventListener("click", () => installTool(toolInfo.tool_id, card));
+  startBtn?.addEventListener("click", () => startTool(toolInfo.tool_id, card));
+  stopBtn?.addEventListener("click", () => stopTool(toolInfo.tool_id, card));
+  restartBtn?.addEventListener("click", () => restartTool(toolInfo.tool_id, card));
+  uninstallBtn?.addEventListener("click", () => uninstallTool(toolInfo.tool_id, toolInfo.display_name, card));
+
+  // Log stream toggle
+  streamBtn?.addEventListener("click", () => {
+    toggleLogStream(toolInfo.tool_id);
+  });
+
+  // Log refresh
+  refreshBtn?.addEventListener("click", () => {
+    refreshLogs(toolInfo.tool_id, card);
+  });
+
+  return card;
+}
+
+/** Refresh the full tool list from backend. */
+async function renderToolList() {
+  const container = document.getElementById("tool-list");
+  if (!container) return;
+
+  try {
+    const tools: ToolInfoResponse[] = await invoke("list_tools");
+
+    // Clear existing cards (but keep empty-state message)
+    const existingCards = container.querySelectorAll(".tool-card");
+    existingCards.forEach(c => c.remove());
+
+    // Create and append a card for each tool
+    for (const tool of tools) {
+      const cardEl = createToolCard(tool);
+      if (cardEl) {
+        container.appendChild(cardEl);
+        // Update UI from current status
+        updateCardUI(tool.tool_id, cardEl, {
+          status: tool.status,
+          port: tool.port || null,
+          installed: tool.installed,
+        });
+
+        // Refresh logs for this tool after a short delay
+        setTimeout(() => refreshLogs(tool.tool_id, cardEl), 500);
+      }
+    }
+
+    checkEmptyState();
+  } catch (err) {
+    console.error("Failed to list tools:", err);
+  }
+}
+
+/** Show/hide the empty-state message. */
+function checkEmptyState() {
+  const container = document.getElementById("tool-list");
+  const emptyMsg = document.getElementById("empty-tools-msg");
+  if (!container || !emptyMsg) return;
+
+  const hasCards = container.querySelectorAll(".tool-card").length > 0;
+  emptyMsg.style.display = hasCards ? "none" : "block";
+}
+
+// ---------------------------------------------------------------------------
+// Register Tool Modal
+// ---------------------------------------------------------------------------
+
+function showRegisterModal() {
+  // Remove existing modal if any
+  removeRegisterModal();
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal">
+      <h2>Register New Tool</h2>
+      <div class="form-group">
+        <label for="reg-tool-id">Tool ID</label>
+        <input type="text" id="reg-tool-id" placeholder="e.g. my-cli-tool" />
+      </div>
+      <div class="form-group">
+        <label for="reg-display-name">Display Name</label>
+        <input type="text" id="reg-display-name" placeholder="e.g. My CLI Tool" />
+      </div>
+      <div class="form-group">
+        <label for="reg-python-url">Python Standalone URL</label>
+        <input type="text" id="reg-python-url" placeholder="https://example.com/python-standalone.tar.gz" />
+      </div>
+      <div class="form-group">
+        <label for="reg-python-sha256">Python SHA-256</label>
+        <input type="text" id="reg-python-sha256" placeholder="abc123..." />
+      </div>
+      <div class="form-group">
+        <label for="reg-wheel-url">Wheel URL</label>
+        <input type="text" id="reg-wheel-url" placeholder="https://example.com/tool-0.1-py3-none-any.whl" />
+      </div>
+      <div class="form-group">
+        <label for="reg-wheel-sha256">Wheel SHA-256</label>
+        <input type="text" id="reg-wheel-sha256" placeholder="def456..." />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" id="reg-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="reg-confirm-btn">Register</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Cancel handler
+  overlay.querySelector("#reg-cancel-btn")!.addEventListener("click", removeRegisterModal);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) removeRegisterModal();
+  });
+
+  // Confirm handler
+  overlay.querySelector("#reg-confirm-btn")!.addEventListener("click", async () => {
+    const toolId = (overlay.querySelector("#reg-tool-id") as HTMLInputElement).value.trim();
+    const displayName = (overlay.querySelector("#reg-display-name") as HTMLInputElement).value.trim();
+    const pythonUrl = (overlay.querySelector("#reg-python-url") as HTMLInputElement).value.trim();
+    const pythonSha256 = (overlay.querySelector("#reg-python-sha256") as HTMLInputElement).value.trim();
+    const wheelUrl = (overlay.querySelector("#reg-wheel-url") as HTMLInputElement).value.trim();
+    const wheelSha256 = (overlay.querySelector("#reg-wheel-sha256") as HTMLInputElement).value.trim();
+
+    if (!toolId || !displayName || !pythonUrl || !pythonSha256 || !wheelUrl || !wheelSha256) {
+      alert("All fields are required.");
+      return;
+    }
+
+    try {
+      await invoke("register_tool", {
+        req: {
+          tool_id: toolId,
+          display_name: displayName,
+          python_standalone_url: pythonUrl,
+          python_standalone_sha256: pythonSha256,
+          wheel_url: wheelUrl,
+          wheel_sha256: wheelSha256,
+        },
+      });
+      removeRegisterModal();
+      renderToolList();
+    } catch (err) {
+      alert(`Registration failed: ${err}`);
+    }
+  });
+}
+
+function removeRegisterModal() {
+  const existing = document.querySelector(".modal-overlay");
+  if (existing) existing.remove();
 }
 
 // ---------------------------------------------------------------------------
@@ -324,34 +581,8 @@ async function handleWindowClose() {
 // ---------------------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
-  installBtn = document.querySelector("#install-btn");
-  startBtn = document.querySelector("#start-btn");
-  stopBtn = document.querySelector("#stop-btn");
-  restartBtn = document.querySelector("#restart-btn");
-  uninstallBtn = document.querySelector("#uninstall-btn");
-  statusBadgeEl = document.querySelector("#status-badge");
-  installMsgEl = document.querySelector("#install-msg");
-  logOutputEl = document.querySelector("#log-output");
-  streamLogsBtn = document.querySelector("#stream-logs-btn");
-
-  // Button event listeners
-  installBtn?.addEventListener("click", installTool);
-  startBtn?.addEventListener("click", startTool);
-  stopBtn?.addEventListener("click", stopTool);
-  restartBtn?.addEventListener("click", restartTool);
-  uninstallBtn?.addEventListener("click", uninstallTool);
-
-  // Log stream toggle button
-  streamLogsBtn?.addEventListener("click", () => {
-    toggleLogStream();
-  });
-
-  // Log refresh button
-  document.querySelector("#refresh-logs-btn")?.addEventListener("click", () => {
-    refreshLogs();
-  });
-
-  document.querySelector("#open-logs-dir-btn")?.addEventListener("click", openLogsDir);
+  // Register tool button
+  document.querySelector("#register-tool-btn")?.addEventListener("click", showRegisterModal);
 
   // Close button — hide instead of quit (menu-bar app)
   const closeBtn = document.querySelector("#close-btn");
@@ -359,23 +590,9 @@ window.addEventListener("DOMContentLoaded", () => {
     closeBtn.addEventListener("click", handleWindowClose);
   }
 
-  // Initial status check
-  getStatus();
+  // Initial render: load tool list from backend
+  renderToolList();
 
-  // Refresh logs after a short delay
-  setTimeout(refreshLogs, 2000);
-
-  // Set up Tauri event listener for real-time log updates (only if streaming is on)
-  listen<LogLineEvent>("log-update", (event) => {
-    if (isStreaming && event.payload) {
-      appendLogLine(event.payload.line);
-    }
-  });
-
-  // Auto-refresh logs every 15 seconds (when not streaming)
-  setInterval(() => {
-    if (!isStreaming) {
-      refreshLogs();
-    }
-  }, 15000);
+  // Auto-refresh tool list every 30 seconds
+  setInterval(renderToolList, 30000);
 });

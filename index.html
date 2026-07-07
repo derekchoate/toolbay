@@ -21,39 +21,16 @@
         <p class="subtitle">Background tool supervisor</p>
       </header>
 
-      <!-- Status Card -->
-      <section class="card status-card" id="status-card">
-        <div class="status-card-header">
-          <span class="status-label">Status</span>
-          <span id="status-badge" class="status-badge stopped">● Stopped</span>
+      <!-- Tool List Section -->
+      <section id="tool-list-section" class="card tool-list-card">
+        <div class="tool-list-header">
+          <span class="status-label">Installed Tools</span>
+          <button id="register-tool-btn" class="btn btn-sm">+ Register Tool</button>
         </div>
-        <p id="install-msg" class="install-msg" data-installed="false">Not installed</p>
-      </section>
-
-      <!-- Control Buttons -->
-      <section class="card actions-card">
-        <div class="button-row primary-actions">
-          <button id="install-btn" class="btn btn-primary">Install</button>
-          <button id="start-btn" class="btn btn-success" disabled>Start</button>
-          <button id="stop-btn" class="btn btn-danger" disabled>Stop</button>
-          <button id="restart-btn" class="btn btn-warning" disabled>Restart</button>
+        <div id="tool-list" class="tool-list">
+          <!-- Tool cards are rendered here dynamically -->
+          <p class="empty-state" id="empty-tools-msg">No tools registered. Click "+ Register Tool" to add one.</p>
         </div>
-        <div class="button-row">
-          <button id="uninstall-btn" class="btn btn-secondary">Uninstall</button>
-        </div>
-      </section>
-
-      <!-- Logs Section -->
-      <section class="card logs-card">
-        <div class="logs-header">
-          <span class="status-label">Logs</span>
-          <div class="log-actions">
-            <button id="stream-logs-btn" class="btn btn-sm">▶ Stream</button>
-            <button id="refresh-logs-btn" class="btn btn-sm">Refresh</button>
-            <button id="open-logs-dir-btn" class="btn btn-sm">Open Logs Dir</button>
-          </div>
-        </div>
-        <pre id="log-output" class="log-output">(Loading…)</pre>
       </section>
 
       <!-- Footer -->
@@ -61,5 +38,43 @@
         <p>Toolbay v0.1.0 — macOS menu bar supervisor</p>
       </footer>
     </main>
+
+    <!-- Tool Card Template (hidden, used for cloning) -->
+    <template id="tool-card-template">
+      <div class="tool-card" data-tool-id="">
+        <!-- Tool Header -->
+        <div class="tool-card-header">
+          <div class="tool-info">
+            <span class="tool-display-name"></span>
+            <span class="tool-id-badge"></span>
+          </div>
+          <span class="status-badge stopped">● Stopped</span>
+        </div>
+
+        <!-- Install Message -->
+        <p class="install-msg" data-installed="false">Not installed</p>
+
+        <!-- Action Buttons -->
+        <div class="tool-actions">
+          <button class="btn btn-primary tool-install-btn" disabled>Install</button>
+          <button class="btn btn-success tool-start-btn" disabled>Start</button>
+          <button class="btn btn-danger tool-stop-btn" disabled>Stop</button>
+          <button class="btn btn-warning tool-restart-btn" disabled>Restart</button>
+          <button class="btn btn-secondary tool-uninstall-btn">Uninstall</button>
+        </div>
+
+        <!-- Logs Section -->
+        <div class="tool-logs">
+          <div class="logs-header">
+            <span class="status-label">Logs</span>
+            <div class="log-actions">
+              <button class="btn btn-sm tool-stream-btn">▶ Stream</button>
+              <button class="btn btn-sm tool-refresh-btn">Refresh</button>
+            </div>
+          </div>
+          <pre class="tool-log-output">(No logs)</pre>
+        </div>
+      </div>
+    </template>
   </body>
 </html>
