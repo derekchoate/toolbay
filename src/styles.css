@@ -406,3 +406,29 @@ body {
     background-color: #48484a;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Log Stream Toggle Button State
+   --------------------------------------------------------------------------- */
+
+.btn-sm.streaming {
+  background-color: #ff3b30;
+  color: #ffffff;
+  animation: pulse-stream 2s infinite;
+}
+
+@keyframes pulse-stream {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .btn-sm.streaming {
+    background-color: #ff453a;
+    color: #ffffff;
+  }
+}

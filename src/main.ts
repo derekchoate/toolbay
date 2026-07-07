@@ -4,6 +4,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,12 @@ interface ToolStatusResponse {
   status: string;
   port: number | null;
   installed: boolean;
+}
+
+/** Shape of the LogLineEvent emitted by the backend during streaming. */
+interface LogLineEvent {
+  tool_id: string;
+  line: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +36,12 @@ let uninstallBtn: HTMLButtonElement | null;
 let statusBadgeEl: HTMLElement | null;
 let installMsgEl: HTMLElement | null;
 let logOutputEl: HTMLElement | null;
+let streamLogsBtn: HTMLButtonElement | null;
+
+// Streaming state
+let isStreaming = false;
+let logStreamListener: (() => void) | null = null;
+let accumulatedLogLines: string[] = [];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,6 +75,28 @@ function updateButtons() {
   if (stopBtn) stopBtn.disabled = !canControl;
   if (restartBtn) restartBtn.disabled = !canControl;
   if (uninstallBtn) uninstallBtn.disabled = !isInstalled;
+}
+
+/** Append a single log line to the log output area. */
+function appendLogLine(line: string) {
+  if (!logOutputEl) return;
+
+  accumulatedLogLines.push(line);
+
+  // Keep only last 500 lines in memory to prevent unbounded growth
+  if (accumulatedLogLines.length > 500) {
+    accumulatedLogLines = accumulatedLogLines.slice(-500);
+  }
+
+  logOutputEl.textContent = accumulatedLogLines.join("\n");
+
+  // Auto-scroll to bottom
+  logOutputEl.scrollTop = logOutputEl.scrollHeight;
+}
+
+/** Clear the accumulated log buffer. */
+function clearLogBuffer() {
+  accumulatedLogLines = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +155,10 @@ async function stopTool() {
     await invoke("stop_tool");
     setStatus("stopped");
     updateButtons();
+    // Stop streaming if active
+    if (isStreaming) {
+      await toggleLogStream(false);
+    }
   } catch (err) {
     console.error("Failed to stop:", err);
   }
@@ -150,6 +189,11 @@ async function uninstallTool() {
   if (!installMsgEl) return;
   installMsgEl.textContent = "Uninstalling… Please wait.";
 
+  // Stop streaming if active
+  if (isStreaming) {
+    await toggleLogStream(false);
+  }
+
   try {
     const result = await invoke("uninstall_tool");
     installMsgEl.textContent = String(result);
@@ -163,10 +207,31 @@ async function uninstallTool() {
 async function refreshLogs() {
   if (!logOutputEl) return;
   try {
-    const logContent: string = await invoke("tail_log", { lines: 100 });
-    logOutputEl.textContent = logContent || "(No log entries yet)";
+    // Stop streaming temporarily for a full refresh
+    const wasStreaming = isStreaming;
+    if (wasStreaming) {
+      await toggleLogStream(false);
+    }
+
+    // Reset log buffer for a fresh read
+    clearLogBuffer();
+
+    const logContent: string = await invoke("tail_log", { reset: true, lines: 100 });
+    if (logContent) {
+      const lines = logContent.split("\n");
+      for (const line of lines) {
+        appendLogLine(line);
+      }
+    } else {
+      appendLogLine("(No log entries yet)");
+    }
+
+    // Restart streaming if it was active
+    if (wasStreaming) {
+      await toggleLogStream(true);
+    }
   } catch (err) {
-    logOutputEl.textContent = `Failed to read logs: ${err}`;
+    appendLogLine(`Failed to read logs: ${err}`);
   }
 }
 
@@ -175,6 +240,42 @@ async function openLogsDir() {
     await invoke("open_logs_dir");
   } catch (err) {
     console.error("Failed to open logs dir:", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Log streaming (real-time push via Tauri events)
+// ---------------------------------------------------------------------------
+
+async function toggleLogStream(forceState?: boolean) {
+  const shouldStart = forceState !== undefined ? forceState : !isStreaming;
+
+  if (shouldStart) {
+    try {
+      await invoke("start_log_stream");
+      isStreaming = true;
+      if (streamLogsBtn) {
+        streamLogsBtn.textContent = "⏸ Pause";
+        streamLogsBtn.classList.add("streaming");
+      }
+    } catch (err) {
+      console.error("Failed to start log streaming:", err);
+    }
+  } else {
+    try {
+      await invoke("stop_log_stream");
+      isStreaming = false;
+      if (logStreamListener) {
+        logStreamListener();
+        logStreamListener = null;
+      }
+      if (streamLogsBtn) {
+        streamLogsBtn.textContent = "▶ Stream";
+        streamLogsBtn.classList.remove("streaming");
+      }
+    } catch (err) {
+      console.error("Failed to stop log streaming:", err);
+    }
   }
 }
 
@@ -231,6 +332,7 @@ window.addEventListener("DOMContentLoaded", () => {
   statusBadgeEl = document.querySelector("#status-badge");
   installMsgEl = document.querySelector("#install-msg");
   logOutputEl = document.querySelector("#log-output");
+  streamLogsBtn = document.querySelector("#stream-logs-btn");
 
   // Button event listeners
   installBtn?.addEventListener("click", installTool);
@@ -238,6 +340,11 @@ window.addEventListener("DOMContentLoaded", () => {
   stopBtn?.addEventListener("click", stopTool);
   restartBtn?.addEventListener("click", restartTool);
   uninstallBtn?.addEventListener("click", uninstallTool);
+
+  // Log stream toggle button
+  streamLogsBtn?.addEventListener("click", () => {
+    toggleLogStream();
+  });
 
   // Log refresh button
   document.querySelector("#refresh-logs-btn")?.addEventListener("click", () => {
@@ -258,6 +365,17 @@ window.addEventListener("DOMContentLoaded", () => {
   // Refresh logs after a short delay
   setTimeout(refreshLogs, 2000);
 
-  // Auto-refresh logs every 15 seconds
-  setInterval(refreshLogs, 15000);
+  // Set up Tauri event listener for real-time log updates (only if streaming is on)
+  listen<LogLineEvent>("log-update", (event) => {
+    if (isStreaming && event.payload) {
+      appendLogLine(event.payload.line);
+    }
+  });
+
+  // Auto-refresh logs every 15 seconds (when not streaming)
+  setInterval(() => {
+    if (!isStreaming) {
+      refreshLogs();
+    }
+  }, 15000);
 });
