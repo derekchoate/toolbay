@@ -84,7 +84,7 @@ body {
    --------------------------------------------------------------------------- */
 
 .container {
-  max-width: 480px;
+  max-width: 640px;
   margin: 0 auto;
   padding: 32px 16px;
   display: flex;
@@ -141,25 +141,166 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Status Card
+   Tool List Card
    --------------------------------------------------------------------------- */
 
-.status-card-header {
+.tool-list-card {
+  padding: 12px;
+}
+
+.tool-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.empty-state {
+  text-align: center;
+  color: #8e8e93;
+  font-size: 13px;
+  padding: 16px;
+}
+
+/* ---------------------------------------------------------------------------
+   Tool Card (individual tool)
+   --------------------------------------------------------------------------- */
+
+.tool-card {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 14px;
+  background-color: #fafafa;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tool-card {
+    background-color: #242426;
+    border-color: rgba(255, 255, 255, 0.06);
+  }
+}
+
+.tool-card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
 }
 
-.status-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #8e8e93;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.tool-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-/* Status Badge */
+.tool-display-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tool-display-name {
+    color: #f5f5f7;
+  }
+}
+
+.tool-id-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background-color: #e8e8ed;
+  color: #636366;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tool-id-badge {
+    background-color: #3a3a3c;
+    color: #8e8e93;
+  }
+}
+
+.install-msg {
+  font-size: 12px;
+  color: #8e8e93;
+  margin-bottom: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   Tool Actions (Buttons)
+   --------------------------------------------------------------------------- */
+
+.tool-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tool-actions .btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  flex: 1;
+}
+
+/* ---------------------------------------------------------------------------
+   Tool Logs
+   --------------------------------------------------------------------------- */
+
+.tool-logs {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  padding-top: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tool-logs {
+    border-color: rgba(255, 255, 255, 0.04);
+  }
+}
+
+.tool-logs .logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.log-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tool-log-output {
+  background-color: #1a1a1a;
+  color: #30d15b;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 10px;
+  border-radius: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tool-log-output {
+    background-color: #0d0d0d;
+    color: #30d15b;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Status Badge
+   --------------------------------------------------------------------------- */
+
 .status-badge {
   display: inline-block;
   padding: 4px 12px;
@@ -215,12 +356,6 @@ body {
     background-color: #1c2e3d;
     color: #64d2ff;
   }
-}
-
-.install-msg {
-  font-size: 13px;
-  color: #8e8e93;
-  margin-top: 4px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -334,7 +469,7 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Logs Card
+   Logs Card (legacy, kept for compatibility)
    --------------------------------------------------------------------------- */
 
 .logs-card .logs-header {
@@ -342,11 +477,6 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
-}
-
-.log-actions {
-  display: flex;
-  gap: 6px;
 }
 
 .log-output {
@@ -388,20 +518,24 @@ body {
    Scrollbar Styling
    --------------------------------------------------------------------------- */
 
+.tool-log-output::-webkit-scrollbar,
 .log-output::-webkit-scrollbar {
   width: 6px;
 }
 
+.tool-log-output::-webkit-scrollbar-track,
 .log-output::-webkit-scrollbar-track {
   background: transparent;
 }
 
+.tool-log-output::-webkit-scrollbar-thumb,
 .log-output::-webkit-scrollbar-thumb {
   background-color: #c7c7cc;
   border-radius: 3px;
 }
 
 @media (prefers-color-scheme: dark) {
+  .tool-log-output::-webkit-scrollbar-thumb,
   .log-output::-webkit-scrollbar-thumb {
     background-color: #48484a;
   }
@@ -431,4 +565,109 @@ body {
     background-color: #ff453a;
     color: #ffffff;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Register Tool Modal
+   --------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal {
+  background-color: #ffffff;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal {
+    background-color: #2c2c2e;
+  }
+}
+
+.modal h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: inherit;
+}
+
+.modal .form-group {
+  margin-bottom: 12px;
+}
+
+.modal label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.modal input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+  background-color: #f5f5f7;
+  color: inherit;
+  font-family: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal input {
+    border-color: rgba(255, 255, 255, 0.1);
+    background-color: #1c1c1e;
+  }
+}
+
+.modal input:focus {
+  outline: none;
+  border-color: #007aff;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modal-actions .btn {
+  padding: 8px 16px;
+}
+
+.modal-actions .btn-cancel {
+  background-color: #e8e8ed;
+  color: #1a1a1a;
+  flex: none;
+  min-width: 80px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal-actions .btn-cancel {
+    background-color: #3a3a3c;
+    color: #e5e5ea;
+  }
+}
+
+.modal-actions .btn-confirm {
+  flex: none;
+  min-width: 80px;
 }

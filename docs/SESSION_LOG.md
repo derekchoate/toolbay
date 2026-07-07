@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Branch:** `feature/real-time-log-streaming`  
+**Branch:** `feature/multi-tool-ui`  
 **Status:** BUILD CLEAN ✅ | 60 tests passing | 2 harmless warnings  
-**Last Updated:** 2026-07-06 (Fourth Session — Real-time Log Streaming)
+**Last Updated:** 2026-07-07 (Fifth Session — Multi-tool UI Frontend)
 
 ### Quick Start for New Sessions
 ```bash
@@ -134,6 +134,84 @@ npm run tauri dev
 - Accumulated log lines buffer (max 500) with auto-scroll to bottom
 - Streaming state tracked in JS — stop streaming on tool stop/uninstall
 - CSS pulse animation on streaming button when active
+
+### What Was Completed (Fifth Session — Multi-tool UI Frontend)
+
+#### 1. Complete frontend rewrite for multi-tool support
+- **Problem:** The original frontend was hardcoded for a single tool (headroom-ai). Despite the backend supporting multiple tools, only one card with static IDs existed.
+- **Solution:** Rewrote the entire frontend to use a dynamic tool list where each registered tool gets its own fully-functional card with individual controls.
+
+#### 2. New `index.html` — Template-based card rendering
+- Replaced single status card / actions card / logs card layout with:
+  - **Tool List Section**: Container that holds dynamically-generated tool cards
+  - **HTML `<template>` element** (`#tool-card-template`): Defines the structure for each tool card, cloned at runtime per registered tool
+  - Each card contains: display name + tool ID badge, status badge, install message, action buttons (Install/Start/Stop/Restart/Uninstall), logs section with Stream/Refresh buttons
+
+#### 3. New `styles.css` — Multi-tool styling
+- Added styles for `.tool-list-card`, `.tool-list`, `.tool-card`, `.tool-card-header`, `.tool-info`, `.tool-display-name`, `.tool-id-badge`
+- Added `.tool-actions` (flex row with smaller buttons), `.tool-logs`, `.tool-log-output`
+- Increased container max-width from 480px to 640px to accommodate wider layouts
+- Added `.modal-overlay`, `.modal`, form styles for the Register Tool dialog
+
+#### 4. New `main.ts` — Full multi-tool lifecycle management
+- **Per-tool state tracking**: `streamStates: Map<string, ToolStreamState>` tracks streaming state per tool_id
+- **Dynamic card creation**: `createToolCard(toolInfo)` clones template, populates content, wires up event listeners via closures over toolId
+- **Per-tool commands**: All Tauri invocations now pass `{ toolId }` parameter: `get_status`, `install_tool`, `start_tool`, `stop_tool`, `restart_tool`, `uninstall_tool`, `tail_log`, `start_log_stream`, `stop_log_stream`
+- **Per-tool streaming**: Each card has independent Stream/Pause toggle; event listener filters for matching `tool_id` in `log-update` events
+- **Per-tool polling**: Independent poll intervals per tool (`pollIntervals: Map<string, number>`)
+- **Register Tool modal**: Inline form dialog for registering new custom tools (calls `register_tool` backend command)
+- **Auto-refresh**: Tool list refreshes every 30 seconds from backend
+
+#### 5. Uninstall UX improvement
+- Uninstalling a tool now removes its card from the DOM immediately
+- Empty state message shown/hidden based on whether cards exist
+
+### Architecture (Phase 5 — Multi-tool UI)
+
+```
+┌─────────────────────────────────────────────┐
+│              Frontend (TS)                  │
+│                                             │
+│  [Tool List Section]                        │
+│  ┌─ "Installed Tools"  [+ Register Tool] ──┐│
+│  │                                           ││
+│  │  ┌─ Tool Card: headroom-ai ────────────┐ ││
+│  │  │ [● Running]  headroom-ai            │ ││
+│  │  │ Installed — Port: 18700             │ ││
+│  │  │ [Install][Start][Stop][Restart]...  │ ││
+│  │  │ Logs: [▶ Stream] [Refresh]          │ ││
+│  │  │ ┌─────────────────────────────────┐ │ ││
+│  │  │ │ ...log content...               │ │ ││
+│  │  │ └─────────────────────────────────┘ │ ││
+│  │  └─────────────────────────────────────┘ ││
+│  │                                           ││
+│  │  ┌─ Tool Card: my-custom-tool ─────────┐ ││
+│  │  │ [● Stopped]  my-cli-tool            │ ││
+│  │  │ Not installed                       │ ││
+│  │  │ [Install][Start][Stop][Restart]...  │ ││
+│  │  │ ...                                 │ ││
+│  │  └─────────────────────────────────────┘ ││
+│  └───────────────────────────────────────────┘│
+├─────────────────────────────────────────────┤
+│              Backend (Rust)                 │
+│                                             │
+│  All commands already accept tool_id:       │
+│    get_status(tool_id?)                     │
+│    list_tools() → Vec<ToolInfoResponse>     │
+│    install_tool(tool_id?)                   │
+│    start_tool(tool_id?)                     │
+│    stop_tool() — current supervisor only    │
+│    restart_tool(tool_id?)                   │
+│    uninstall_tool(tool_id?)                 │
+│    tail_log(tool_id?, lines?, reset?)       │
+│    register_tool(req)                       │
+└─────────────────────────────────────────────┘
+```
+
+### Known Limitation (Phase 5)
+- `stop_tool` and the supervisor-based commands only control one supervisor instance. For true multi-tool concurrent management, a `SupervisorManager` (one Supervisor per tool) is needed — this is noted as future work in Phase 3.
+
+---
 
 ### Architecture (Real-time Log Streaming)
 
@@ -273,15 +351,16 @@ let sup = state.supervisor.lock().await;
 
 ## Remaining Work for Future Sessions
 
-### Phase 2 (Remaining Items)
+### Phase 2 (Remaining Items) — ALL COMPLETE ✅
 1. ~~**Auto-restart on health check failure**~~ ✅ **COMPLETE** — Implemented in third session. `Supervisor::start()` now uses an outer restart loop with `tokio::select!` to race between process exit and health-monitor signals. On health failure, the unhealthy process is killed, backoff delay applied, and re-spawn attempted.
 2. ~~**Real-time log streaming**~~ ✅ **COMPLETE** — Implemented in fourth session via `log_stream.rs`. Background tailer tasks emit new lines as Tauri events (`"log-update"`). Frontend has Stream/Pause toggle button with pulse animation.
 
 ### Phase 3: Polish & Distribution
-1. **Code signing** for macOS notarization
-2. **Auto-updater** integration (Tauri has built-in updater plugin)
-3. **Multi-tool UI** — Frontend should list all installed tools with individual controls
-4. **Settings panel** — Configure port ranges, restart policies, log levels
+1. ~~**Multi-tool UI**~~ ✅ **COMPLETE** — Implemented in fifth session. Frontend now renders a dynamic list of tool cards, each with individual controls (Install/Start/Stop/Restart/Uninstall), per-tool log streaming, and a Register Tool modal dialog.
+2. **Concurrent multi-tool supervisor** — `stop_tool` currently only stops the single Supervisor instance. Full concurrent management requires a `SupervisorManager` that maintains one Supervisor per running tool.
+3. **Code signing** for macOS notarization
+4. **Auto-updater** integration (Tauri has built-in updater plugin)
+5. **Settings panel** — Configure port ranges, restart policies, log levels
 
 ### Documentation Needed
 - User-facing README with installation instructions
@@ -330,8 +409,9 @@ Test modules:
 ## Git History (Current Branch)
 
 ```
-feature/real-time-log-streaming
-├── (pending commit) feat: add real-time log streaming via Tauri events
+feature/multi-tool-ui (HEAD — current branch)
+├── (pending commit) feat: add multi-tool UI frontend with dynamic tool cards
+├── 10ed6b3 (origin/feature/real-time-log-streaming) feat: add real-time log streaming via Tauri events
 ├── ee9f291 (origin/main, main) feat.supervisor: implement auto-restart on health check failure
 └── ... (earlier Phase 2 commits on origin/main)
 ```
